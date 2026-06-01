@@ -210,6 +210,7 @@ async def handle_check_single(callback: CallbackQuery) -> None:
     repo = repos[index]
     owner, repo_name = repo["name"].split("/", 1)
     await callback.answer("Проверяю обновления…")
+    await callback.message.bot.send_chat_action(callback.message.chat.id, action="typing")
     try:
         latest = await fetch_latest_release(owner, repo_name)
         recent = await fetch_last_n_releases(owner, repo_name, 3)
@@ -272,6 +273,7 @@ async def prompt_add_repo(message: Message, state: FSMContext) -> None:
 async def process_add_url(message: Message, state: FSMContext) -> None:
     """Validate the URL, add the repo, and return to the main menu."""
     url = message.text.strip()
+    await message.bot.send_chat_action(message.chat.id, action="typing")
     error = await _validate_and_add_repo(message.from_user.id, url)
     if error:
         await message.answer(error)
