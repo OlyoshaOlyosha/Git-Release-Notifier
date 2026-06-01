@@ -41,53 +41,53 @@ async def background_checker(bot: Bot) -> None:
 
             for name, info in unique_repos.items():
                 owner, repo_name = name.split("/", 1)
+                repo_modified = False
 
-                # Fetch both latest release and last 3 releases (one API call each)
-                latest_release = None
-                recent_releases = []
                 try:
                     latest_release = await fetch_latest_release(owner, repo_name)
                     recent_releases = await fetch_last_n_releases(owner, repo_name, 3)
                 except Exception as e:
                     logger.warning("Failed to fetch releases for %s: %s", name, e)
+                else:
+                    # Build lightweight cached list from successfully fetched releases
+                    cached = [
+                        CachedReleaseInfo(
+                            tag_name=r["tag_name"],
+                            name=r["name"],
+                            html_url=r["html_url"],
+                            published_at=r["published_at"],
+                        )
+                        for r in recent_releases
+                    ]
 
-                # Build lightweight cached list from the fetched releases
-                cached = [
-                    CachedReleaseInfo(
-                        tag_name=r["tag_name"],
-                        name=r["name"],
-                        html_url=r["html_url"],
-                        published_at=r["published_at"],
-                    )
-                    for r in recent_releases
-                ]
+                    # Update every user who subscribes to this repo
+                    for uid in info["users"]:
+                        user_repos = users.get(uid)
+                        if not user_repos:
+                            continue
+                        for repo in user_repos:
+                            if repo.get("name") == name:
+                                repo["cached_releases"] = cached
+                                repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                repo_modified = True
 
-                # Update all users subscribing to this repo
-                updated = False
-                for uid in info["users"]:
-                    user_repos = users.get(uid)
-                    if not user_repos:
-                        continue
-                for repo in user_repos:
-                    if repo.get("name") == name:
-                        # Always refresh the cached releases and set last check time
-                        repo["cached_releases"] = cached
-                        repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                if latest_release:
+                                    new_id = latest_release["id"]
+                                    old_id = repo.get("last_release_id")
+                                    if old_id is None or old_id < new_id:
+                                        repo["last_release_id"] = new_id
+                                        msg = _format_release_notification(repo["name"], latest_release)
+                                        try:
+                                            await bot.send_message(
+                                                uid,
+                                                msg,
+                                                parse_mode="HTML",
+                                                disable_web_page_preview=True,
+                                            )
+                                        except Exception as e:
+                                            logger.warning("Could not notify user %d: %s", uid, e)
 
-                        # Check for new release and notify
-                        if latest_release:
-                            new_id = latest_release["id"]
-                            old_id = repo.get("last_release_id")
-                            if old_id is None or old_id < new_id:
-                                repo["last_release_id"] = new_id
-                                updated = True
-                                msg = _format_release_notification(repo["name"], latest_release)
-                                try:
-                                    await bot.send_message(uid, msg, parse_mode="HTML", disable_web_page_preview=True)
-                                except Exception as e:
-                                    logger.warning("Could not notify user %d: %s", uid, e)
-
-                if updated or cached:
+                if repo_modified:
                     save_subscriptions(subs)
 
                 await asyncio.sleep(API_DELAY_SEC)
