@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env from the current working directory (project root)
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
+GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")  # Optional token to raise GitHub API limits to 5000 req/h
 SUBSCRIPTIONS_FILE: str = "subscriptions.json"
 CHECK_INTERVAL_SEC: int = 3600  # 1 hour between full check cycles
 API_DELAY_SEC: float = 3.0  # Delay between GitHub API requests to respect rate limits

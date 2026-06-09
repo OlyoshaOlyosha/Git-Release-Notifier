@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiohttp
 
+from core.config import GITHUB_TOKEN
 from core.models import ReleaseInfo
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -12,7 +13,8 @@ GITHUB_API_BASE = "https://api.github.com"
 async def fetch_repo_info(owner: str, repo: str) -> dict:
     """Fetch basic repository information (e.g., full_name)."""
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}"
-    async with aiohttp.ClientSession() as session, session.get(url) as resp:
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+    async with aiohttp.ClientSession(headers=headers) as session, session.get(url) as resp:
         resp.raise_for_status()
         return await resp.json()
 
@@ -23,7 +25,8 @@ async def fetch_latest_release(owner: str, repo: str) -> ReleaseInfo | None:
     Returns None if no such release exists.
     """
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/latest"
-    async with aiohttp.ClientSession() as session, session.get(url) as resp:
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+    async with aiohttp.ClientSession(headers=headers) as session, session.get(url) as resp:
         if resp.status == 404:
             return None
         resp.raise_for_status()
@@ -34,7 +37,8 @@ async def fetch_latest_release(owner: str, repo: str) -> ReleaseInfo | None:
 async def fetch_last_n_releases(owner: str, repo: str, n: int = 3) -> list[ReleaseInfo]:
     """Fetch the last N releases (excluding drafts and prereleases)."""
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases?per_page={n}"
-    async with aiohttp.ClientSession() as session, session.get(url) as resp:
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+    async with aiohttp.ClientSession(headers=headers) as session, session.get(url) as resp:
         resp.raise_for_status()
         data = await resp.json()
         return [_extract_release_info(item) for item in data if not item.get("draft") and not item.get("prerelease")]
