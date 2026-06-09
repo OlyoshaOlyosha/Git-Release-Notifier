@@ -46,6 +46,8 @@ async def main() -> None:
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
