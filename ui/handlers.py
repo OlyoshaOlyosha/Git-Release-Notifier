@@ -210,6 +210,7 @@ async def handle_check_single(callback: CallbackQuery) -> None:
     repo = repos[index]
     owner, repo_name = repo["name"].split("/", 1)
     await callback.answer("Проверяю обновления…")
+    logger.info("User %d manually checking repository %s", uid, repo["name"])
     await callback.message.bot.send_chat_action(callback.message.chat.id, action="typing")
     try:
         latest = await fetch_latest_release(owner, repo_name)
@@ -217,6 +218,14 @@ async def handle_check_single(callback: CallbackQuery) -> None:
     except Exception:
         await callback.message.edit_text("❌ Не удалось проверить релизы. Попробуйте позже.")
         return
+
+    # Log whether a new release was found (before updating last_release_id)
+    if latest:
+        old_id = repo.get("last_release_id")
+        if old_id is None or latest["id"] > old_id:
+            logger.info("Manual check: new release found for %s (id=%d)", repo["name"], latest["id"])
+        else:
+            logger.info("Manual check: no new release for %s", repo["name"])
 
     # Update repo data
     repo["last_release_id"] = latest["id"] if latest else repo.get("last_release_id")
@@ -278,6 +287,10 @@ async def process_add_url(message: Message, state: FSMContext) -> None:
     if error:
         await message.answer(error)
         return  # keep the state for another try
+    # Extract full_name from the validated URL for logging
+    parsed = _parse_owner_repo(url)
+    full_name = f"{parsed[0]}/{parsed[1]}" if parsed else url
+    logger.info("User %d added repository: %s", message.from_user.id, full_name)
     await state.clear()
     await message.answer("✅ Репозиторий успешно добавлен!", reply_markup=main_menu_keyboard())
 
@@ -322,6 +335,7 @@ async def confirm_delete(callback: CallbackQuery) -> None:
     deleted_name = repos[index]["name"]
     del repos[index]
     _set_user_repos(uid, repos)
+    logger.info("User %d deleted repository: %s", uid, deleted_name)
     await callback.message.edit_text(f"🗑 Репозиторий {deleted_name} удалён.")
     await callback.answer(f"{deleted_name} удалён.")
 
@@ -428,11 +442,13 @@ async def process_edit_url(message: Message, state: FSMContext) -> None:
         await message.answer("Вы уже отслеживаете этот репозиторий.")
         return
 
+    old_name = repos[index]["name"]
     repos[index]["url"] = f"https://github.com/{full_name}"
     repos[index]["name"] = full_name
     repos[index]["last_release_id"] = None  # reset because URL changed
     repos[index]["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _set_user_repos(uid, repos)
+    logger.info("User %d updated repository URL: %s -> %s", uid, old_name, full_name)
     await state.clear()
     await message.answer("✅ Репозиторий успешно обновлён!", reply_markup=main_menu_keyboard())
 

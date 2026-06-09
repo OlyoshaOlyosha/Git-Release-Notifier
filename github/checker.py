@@ -29,6 +29,8 @@ async def background_checker(bot: Bot) -> None:
         # to avoid consuming GitHub API rate limits immediately after bot start.
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
+        logger.info("Starting background check cycle")
+
         try:
             subs = load_subscriptions()
             users = subs.get("users", {})
@@ -48,6 +50,7 @@ async def background_checker(bot: Bot) -> None:
                 owner, repo_name = name.split("/", 1)
                 repo_modified = False
 
+                logger.info("Checking %s", name)
                 try:
                     latest_release = await fetch_latest_release(owner, repo_name)
                     recent_releases = await fetch_last_n_releases(owner, repo_name, 3)
@@ -80,6 +83,9 @@ async def background_checker(bot: Bot) -> None:
                                     new_id = latest_release["id"]
                                     old_id = repo.get("last_release_id")
                                     if old_id is None or old_id < new_id:
+                                        logger.info(
+                                            "New release detected for %s (id=%d), notifying user %d", name, new_id, uid
+                                        )
                                         repo["last_release_id"] = new_id
                                         msg = _format_release_notification(repo["name"], latest_release)
                                         try:
@@ -89,8 +95,11 @@ async def background_checker(bot: Bot) -> None:
                                                 parse_mode="HTML",
                                                 disable_web_page_preview=True,
                                             )
+                                            logger.info("Notification sent to user %d for %s", uid, name)
                                         except Exception as e:
                                             logger.warning("Could not notify user %d: %s", uid, e)
+                                    else:
+                                        logger.info("No new release for %s", name)
 
                 if repo_modified:
                     save_subscriptions(subs)
@@ -100,6 +109,7 @@ async def background_checker(bot: Bot) -> None:
         except Exception:
             logger.exception("Error in background checker loop")
 
+        logger.info("Background check cycle finished")
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
 
