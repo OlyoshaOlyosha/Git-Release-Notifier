@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -103,5 +104,5 @@ def _format_release_notification(repo_name: str, release: ReleaseInfo) -> str:
     return (
         f"🚀 Новый релиз <b>{repo_name}</b>!\n"
         f"<a href='{release['html_url']}'>{release['tag_name']}</a>\n\n"
-        f"{release['body'][:500]}"  # truncate body to avoid oversized messages
+        f"{html.escape(release['body'][:500])}"  # truncate body to avoid oversized messages, then escape HTML
     )
