@@ -25,6 +25,10 @@ async def background_checker(bot: Bot) -> None:
     and also refreshes the cached list of the last 3 releases.
     """
     while True:
+        # Wait one full interval before performing the very first check
+        # to avoid consuming GitHub API rate limits immediately after bot start.
+        await asyncio.sleep(CHECK_INTERVAL_SEC)
+
         try:
             subs = load_subscriptions()
             users = subs.get("users", {})
