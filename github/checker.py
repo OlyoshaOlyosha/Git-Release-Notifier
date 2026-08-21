@@ -18,6 +18,91 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def run_check_cycle(bot: Bot) -> None:
+    """Perform a single check cycle for all repos: fetch releases, update cache, notify."""
+    logger.info("Starting background check cycle")
+
+    try:
+        subs = load_subscriptions()
+        users = subs.get("users", {})
+
+        # Build a unique set of repos across all users
+        unique_repos: dict[str, dict] = {}  # name -> {url, users}
+        for uid, repo_list in users.items():
+            for repo in repo_list:
+                name = repo.get("name")
+                if not name:
+                    continue
+                if name not in unique_repos:
+                    unique_repos[name] = {"url": repo["url"], "users": []}
+                unique_repos[name]["users"].append(uid)
+
+        for name, info in unique_repos.items():
+            owner, repo_name = name.split("/", 1)
+            repo_modified = False
+
+            logger.info("Checking %s", name)
+            try:
+                latest_release = await fetch_latest_release(owner, repo_name)
+                recent_releases = await fetch_last_n_releases(owner, repo_name, 3)
+            except Exception as e:
+                logger.warning("Failed to fetch releases for %s: %s", name, e)
+            else:
+                # Build lightweight cached list from successfully fetched releases
+                cached = [
+                    CachedReleaseInfo(
+                        tag_name=r["tag_name"],
+                        name=r["name"],
+                        html_url=r["html_url"],
+                        published_at=r["published_at"],
+                    )
+                    for r in recent_releases
+                ]
+
+                # Update every user who subscribes to this repo
+                for uid in info["users"]:
+                    user_repos = users.get(uid)
+                    if not user_repos:
+                        continue
+                    for repo in user_repos:
+                        if repo.get("name") == name:
+                            repo["cached_releases"] = cached
+                            repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            repo_modified = True
+
+                            if latest_release:
+                                new_id = latest_release["id"]
+                                old_id = repo.get("last_release_id")
+                                if old_id is None or old_id < new_id:
+                                    logger.info(
+                                        "New release detected for %s (id=%d), notifying user %d", name, new_id, uid
+                                    )
+                                    repo["last_release_id"] = new_id
+                                    msg = _format_release_notification(repo["name"], latest_release)
+                                    try:
+                                        await bot.send_message(
+                                            uid,
+                                            msg,
+                                            parse_mode="HTML",
+                                            disable_web_page_preview=True,
+                                        )
+                                        logger.info("Notification sent to user %d for %s", uid, name)
+                                    except Exception as e:
+                                        logger.warning("Could not notify user %d: %s", uid, e)
+                                else:
+                                    logger.info("No new release for %s", name)
+
+            if repo_modified:
+                save_subscriptions(subs)
+
+            await asyncio.sleep(API_DELAY_SEC)
+
+    except Exception:
+        logger.exception("Error in background checker loop")
+
+    logger.info("Background check cycle finished")
+
+
 async def background_checker(bot: Bot) -> None:
     """Infinite loop that checks all unique repos and notifies subscribed users about new releases.
 
@@ -29,87 +114,8 @@ async def background_checker(bot: Bot) -> None:
         # to avoid consuming GitHub API rate limits immediately after bot start.
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
-        logger.info("Starting background check cycle")
+        await run_check_cycle(bot)
 
-        try:
-            subs = load_subscriptions()
-            users = subs.get("users", {})
-
-            # Build a unique set of repos across all users
-            unique_repos: dict[str, dict] = {}  # name -> {url, users}
-            for uid, repo_list in users.items():
-                for repo in repo_list:
-                    name = repo.get("name")
-                    if not name:
-                        continue
-                    if name not in unique_repos:
-                        unique_repos[name] = {"url": repo["url"], "users": []}
-                    unique_repos[name]["users"].append(uid)
-
-            for name, info in unique_repos.items():
-                owner, repo_name = name.split("/", 1)
-                repo_modified = False
-
-                logger.info("Checking %s", name)
-                try:
-                    latest_release = await fetch_latest_release(owner, repo_name)
-                    recent_releases = await fetch_last_n_releases(owner, repo_name, 3)
-                except Exception as e:
-                    logger.warning("Failed to fetch releases for %s: %s", name, e)
-                else:
-                    # Build lightweight cached list from successfully fetched releases
-                    cached = [
-                        CachedReleaseInfo(
-                            tag_name=r["tag_name"],
-                            name=r["name"],
-                            html_url=r["html_url"],
-                            published_at=r["published_at"],
-                        )
-                        for r in recent_releases
-                    ]
-
-                    # Update every user who subscribes to this repo
-                    for uid in info["users"]:
-                        user_repos = users.get(uid)
-                        if not user_repos:
-                            continue
-                        for repo in user_repos:
-                            if repo.get("name") == name:
-                                repo["cached_releases"] = cached
-                                repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                repo_modified = True
-
-                                if latest_release:
-                                    new_id = latest_release["id"]
-                                    old_id = repo.get("last_release_id")
-                                    if old_id is None or old_id < new_id:
-                                        logger.info(
-                                            "New release detected for %s (id=%d), notifying user %d", name, new_id, uid
-                                        )
-                                        repo["last_release_id"] = new_id
-                                        msg = _format_release_notification(repo["name"], latest_release)
-                                        try:
-                                            await bot.send_message(
-                                                uid,
-                                                msg,
-                                                parse_mode="HTML",
-                                                disable_web_page_preview=True,
-                                            )
-                                            logger.info("Notification sent to user %d for %s", uid, name)
-                                        except Exception as e:
-                                            logger.warning("Could not notify user %d: %s", uid, e)
-                                    else:
-                                        logger.info("No new release for %s", name)
-
-                if repo_modified:
-                    save_subscriptions(subs)
-
-                await asyncio.sleep(API_DELAY_SEC)
-
-        except Exception:
-            logger.exception("Error in background checker loop")
-
-        logger.info("Background check cycle finished")
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
 

@@ -9,13 +9,14 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 
 from core import config
-from github.checker import background_checker
+from github.checker import background_checker, run_check_cycle
 from ui.handlers import router
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,13 @@ async def main() -> None:
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
     bot = Bot(token=config.BOT_TOKEN)
+
+    # One‑shot mode: run a single check and exit
+    if "--once" in sys.argv:
+        await run_check_cycle(bot)
+        await bot.session.close()
+        return
+
     dp = Dispatcher()
     dp.include_router(router)
 
