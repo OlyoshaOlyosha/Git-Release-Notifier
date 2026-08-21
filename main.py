@@ -14,6 +14,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from core import config
 from github.checker import background_checker, run_check_cycle
@@ -49,7 +50,11 @@ async def main() -> None:
 
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
-    bot = Bot(token=config.BOT_TOKEN)
+    if config.PROXY_URL:
+        session = AiohttpSession(proxy=config.PROXY_URL)
+        bot = Bot(token=config.BOT_TOKEN, session=session)
+    else:
+        bot = Bot(token=config.BOT_TOKEN)
 
     # One‑shot mode: run a single check and exit
     if "--once" in sys.argv:
