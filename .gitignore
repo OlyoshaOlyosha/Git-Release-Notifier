@@ -217,5 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# AI config
+.opencode/
+AGENTS.md
+
 # Other
 subscriptions.json
