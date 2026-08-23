@@ -204,6 +204,7 @@ class _TgHtmlConverter(HTMLParser):
         "a": "a",
         "br": "br",
         "code": "code",
+        "li": "li",
     }
 
     def __init__(self) -> None:

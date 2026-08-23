@@ -114,9 +114,9 @@ def test_format_release_notification_body_html_fallback():
         ("<blockquote>q</blockquote>", "<blockquote>q</blockquote>"),
         ('<a href="https://x.com" rel="nofollow">link</a>', '<a href="https://x.com">link</a>'),
         ("<h1>Title</h1>", "<b>Title</b>"),
-        # NOTE: <li> is dropped by the current converter (see reported bug: li handling
-        # is unreachable because "li" is absent from _ALLOWED_MAP). Only inner text survives.
-        ("<li>item</li>", "item"),
+        # <li> renders as a bullet; no </li> is emitted by handle_endtag.
+        ("<li>item</li>", "• item"),
+        ("<li>a</li><li>b</li>", "• a\n• b"),
         ('<img src="U" alt="X">', '<a href="U">🖼 X</a>'),
         ("<div>Hello</div>", "Hello"),
         ("<span>x</span>", "x"),
