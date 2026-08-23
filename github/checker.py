@@ -109,14 +109,8 @@ async def run_check_cycle(bot: Bot) -> None:
                                         "New release detected for %s (id=%d), notifying user %d", name, new_id, uid
                                     )
                                     repo["last_release_id"] = new_id
-                                    msg = _format_release_notification(repo["name"], best)
                                     try:
-                                        await bot.send_message(
-                                            uid,
-                                            msg,
-                                            parse_mode="HTML",
-                                            disable_web_page_preview=True,
-                                        )
+                                        await _send_release_notification(bot, uid, repo["name"], best)
                                         logger.info("Notification sent to user %d for %s", uid, name)
                                     except Exception as e:
                                         logger.warning("Could not notify user %d: %s", uid, e)
@@ -149,10 +143,47 @@ async def background_checker(bot: Bot) -> None:
         await run_check_cycle(bot)
 
 
+def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
+    """Split text into chunks of at most `limit` chars, preferring paragraph breaks.
+
+    Paragraphs are separated by ``\\n\\n``. An oversized single paragraph is
+    hard-split by characters as a last resort.
+    """
+    chunks: list[str] = []
+    current = ""
+    for paragraph in text.split("\n\n"):
+        if len(paragraph) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(paragraph), limit):
+                chunks.append(paragraph[i : i + limit])
+            continue
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = paragraph
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def _send_release_notification(bot: Bot, uid: int, repo_name: str, release: ReleaseInfo) -> None:
+    """Format and send a release notification, splitting into multiple messages if needed."""
+    text = _format_release_notification(repo_name, release)
+    for chunk in _split_html_safe(text, limit=4000):
+        await bot.send_message(uid, chunk, parse_mode="HTML", disable_web_page_preview=True)
+
+
 def _format_release_notification(repo_name: str, release: ReleaseInfo) -> str:
     """Format a notification message for a new release (Russian)."""
-    return (
-        f"🚀 Новый релиз <b>{repo_name}</b>!\n"
-        f"<a href='{release['html_url']}'>{release['tag_name']}</a>\n\n"
-        f"{html.escape(release['body'][:500])}"  # truncate body to avoid oversized messages, then escape HTML
-    )
+    parts = [
+        f"🚀 Новый релиз <b>{repo_name}</b>",
+        f"<a href='{release['html_url']}'>{release['tag_name']}</a>"
+        + (f" — {release['name']}" if release.get("name") and release["name"] != release["tag_name"] else ""),
+    ]
+    if release.get("body"):
+        parts.append(html.escape(release["body"]))
+    return "\n\n".join(parts)
