@@ -63,15 +63,21 @@ def confirmation_keyboard(index: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def repo_detail_keyboard(index: int) -> InlineKeyboardMarkup:
+def repo_detail_keyboard(index: int, notify_prerelease: bool = False) -> InlineKeyboardMarkup:
     """Inline keyboard for the repository detail view.
 
-    Provides Edit, Delete, and Back buttons.
+    Provides Edit, Delete, a pre-release notification toggle, and Back buttons.
     """
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="✏️ Изменить", callback_data=f"repo:edit:{index}"),
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"repo:delete:{index}"),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"🔔 Пре-релизы: {'ВКЛ' if notify_prerelease else 'ВЫКЛ'}",
+            callback_data=f"toggle_prerelease:{index}",
+        ),
     )
     builder.row(
         InlineKeyboardButton(text="⬅️ Назад", callback_data="repo_list_back"),

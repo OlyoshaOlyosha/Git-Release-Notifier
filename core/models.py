@@ -30,6 +30,7 @@ class RepoEntry(TypedDict):
     last_release_id: int | None  # ID of last known release; None if never checked
     cached_releases: list[CachedReleaseInfo]  # last 3 releases, refreshed by background checker
     last_checked: str  # ISO 8601 timestamp of last successful check, or "" if never
+    notify_prerelease: bool  # notify on pre-releases too; default False
 
 
 class Subscriptions(TypedDict):

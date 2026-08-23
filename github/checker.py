@@ -51,10 +51,20 @@ async def run_check_cycle(bot: Bot) -> None:
             owner, repo_name = name.split("/", 1)
             repo_modified = False
 
+            # Determine whether any subscriber wants pre-release notifications for this repo
+            notify = False
+            for uid in info["users"]:
+                for r in users.get(uid, []):
+                    if r.get("name") == name and r.get("notify_prerelease", False):
+                        notify = True
+                        break
+                if notify:
+                    break
+
             logger.info("Checking %s", name)
             try:
                 latest_release = await fetch_latest_release(owner, repo_name)
-                recent_releases = await fetch_last_n_releases(owner, repo_name, 3)
+                recent_releases = await fetch_last_n_releases(owner, repo_name, 3, include_prerelease=notify)
             except Exception as e:
                 logger.warning("Failed to fetch releases for %s: %s", name, e)
                 await notify_admin(bot, f"GitHub API fetch failed for {name}: {e}")
@@ -81,15 +91,25 @@ async def run_check_cycle(bot: Bot) -> None:
                             repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                             repo_modified = True
 
+                            # Build notification candidates: the latest release, plus pre-releases if enabled
+                            candidates = []
                             if latest_release:
-                                new_id = latest_release["id"]
+                                candidates.append(latest_release)
+                            if repo.get("notify_prerelease", False):
+                                for r in recent_releases:
+                                    if r.get("prerelease"):
+                                        candidates.append(r)
+
+                            if candidates:
+                                best = max(candidates, key=lambda r: r["id"])
+                                new_id = best["id"]
                                 old_id = repo.get("last_release_id")
                                 if old_id is None or old_id < new_id:
                                     logger.info(
                                         "New release detected for %s (id=%d), notifying user %d", name, new_id, uid
                                     )
                                     repo["last_release_id"] = new_id
-                                    msg = _format_release_notification(repo["name"], latest_release)
+                                    msg = _format_release_notification(repo["name"], best)
                                     try:
                                         await bot.send_message(
                                             uid,

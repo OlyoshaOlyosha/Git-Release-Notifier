@@ -362,6 +362,22 @@ async def handle_repo_action(callback: CallbackQuery, state: FSMContext) -> None
         await callback.answer("Неизвестное действие.", show_alert=True)
 
 
+@router.callback_query(F.data.startswith("toggle_prerelease:"))
+async def handle_toggle_prerelease(callback: CallbackQuery) -> None:
+    """Toggle per-repo pre-release notifications and re-render the detail view."""
+    index_str = callback.data.split(":", 1)[1]
+    index = int(index_str)
+    uid = callback.from_user.id
+    repos = _user_repos(uid)
+    if index < 0 or index >= len(repos):
+        await callback.answer("Неверный индекс репозитория.", show_alert=True)
+        return
+    repo = repos[index]
+    repo["notify_prerelease"] = not repo.get("notify_prerelease", False)
+    _set_user_repos(uid, repos)
+    await show_repo_detail(callback, index)
+
+
 @router.callback_query(F.data.startswith("confirm_delete:"))
 async def confirm_delete(callback: CallbackQuery) -> None:
     """Delete a repo after user confirmation."""
@@ -565,7 +581,7 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
         text,
         parse_mode="HTML",
         disable_web_page_preview=True,
-        reply_markup=repo_detail_keyboard(index),
+        reply_markup=repo_detail_keyboard(index, repo.get("notify_prerelease", False)),
     )
 
 

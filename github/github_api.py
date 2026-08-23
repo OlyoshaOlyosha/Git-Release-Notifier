@@ -34,14 +34,20 @@ async def fetch_latest_release(owner: str, repo: str) -> ReleaseInfo | None:
         return _extract_release_info(data)
 
 
-async def fetch_last_n_releases(owner: str, repo: str, n: int = 3) -> list[ReleaseInfo]:
-    """Fetch the last N releases (excluding drafts and prereleases)."""
+async def fetch_last_n_releases(
+    owner: str, repo: str, n: int = 3, include_prerelease: bool = False
+) -> list[ReleaseInfo]:
+    """Fetch the last N releases (excluding drafts; prereleases excluded unless include_prerelease)."""
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases?per_page={n}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
     async with aiohttp.ClientSession(headers=headers) as session, session.get(url) as resp:
         resp.raise_for_status()
         data = await resp.json()
-        return [_extract_release_info(item) for item in data if not item.get("draft") and not item.get("prerelease")]
+        return [
+            {**_extract_release_info(item), "prerelease": bool(item.get("prerelease", False))}
+            for item in data
+            if not item.get("draft") and (include_prerelease or not item.get("prerelease"))
+        ]
 
 
 def _extract_release_info(api_data: dict) -> ReleaseInfo:
