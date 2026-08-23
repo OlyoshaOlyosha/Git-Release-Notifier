@@ -21,6 +21,7 @@ def test_extract_release_info_happy():
         "name": "Release 1.0",
         "html_url": "https://github.com/owner/repo/releases/tag/v1.0",
         "body": "Some notes",
+        "body_html": "",
         "published_at": "2024-01-15T10:30:00Z",
     }
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import TYPE_CHECKING
 
 from core.config import ADMIN_USER_ID, API_DELAY_SEC, CHECK_INTERVAL_SEC
@@ -177,28 +179,164 @@ async def background_checker(bot: Bot) -> None:
         await run_check_cycle(bot)
 
 
-def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
-    """Split text into chunks of at most `limit` chars, preferring paragraph breaks.
+class _TgHtmlConverter(HTMLParser):
+    """Convert GitHub's pre-rendered ``body_html`` to Telegram-supported HTML.
 
-    Paragraphs are separated by ``\\n\\n``. An oversized single paragraph is
-    hard-split by characters as a last resort.
+    Tags outside Telegram's allowed subset are dropped while their inner text is
+    preserved (except ``img`` and other unknown tags, where only text survives).
     """
+
+    # Allowed tags mapped to their Telegram equivalent tag name.
+    _ALLOWED_MAP = {
+        "b": "b",
+        "strong": "b",
+        "i": "i",
+        "em": "i",
+        "u": "u",
+        "s": "s",
+        "strike": "s",
+        "del": "s",
+        "blockquote": "blockquote",
+        "pre": "pre",
+        "a": "a",
+        "br": "br",
+        "code": "code",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._out: list[str] = []
+        self._inside_pre = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
+        if tag == "img":
+            return
+        tg = self._ALLOWED_MAP.get(tag)
+        if tg is None:
+            return  # dropped tag; inner text is preserved by handle_data
+        if tag == "li":
+            self._out.append("\n• ")
+            return
+        if tg == "code" and self._inside_pre > 0:
+            return  # already inside <pre>; don't wrap in <code>
+        if tg == "a":
+            href = dict(attrs).get("href", "")
+            self._out.append(f'<a href="{html.escape(href, quote=True)}">')
+        elif tg == "br":
+            self._out.append("<br>")
+        else:
+            self._out.append(f"<{tg}>")
+        if tg == "pre":
+            self._inside_pre += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "img":
+            return
+        tg = self._ALLOWED_MAP.get(tag)
+        if tg is None:
+            return
+        if tag == "li":
+            return
+        if tg == "code" and self._inside_pre > 0:
+            return
+        if tg == "br":
+            return
+        if tg == "a":
+            self._out.append("</a>")
+        else:
+            self._out.append(f"</{tg}>")
+        if tg == "pre":
+            self._inside_pre = max(0, self._inside_pre - 1)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
+        # Self-closing forms: <br/>, <img/>, <hr/>, etc.
+        if tag == "br":
+            self._out.append("<br>")
+            return
+        if tag == "img":
+            return
+        # Any other self-closing tag is dropped (kept tags like <a/> don't carry content).
+
+    def handle_data(self, data: str) -> None:
+        self._out.append(html.escape(data))
+
+
+def _github_html_to_telegram(html_text: str) -> str:
+    """Convert GitHub release ``body_html`` to a Telegram-safe HTML string."""
+    parser = _TgHtmlConverter()
+    parser.feed(html_text)
+    parser.close()
+    result = "".join(parser._out)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
+    """Split HTML into chunks of at most `limit` chars.
+
+    Cutting happens only at tag boundaries; any tags still open at the end of a
+    chunk are closed and re-opened at the start of the next chunk so markup is
+    never broken across messages. A run of bare text with no tags that still
+    exceeds `limit` is hard-split by characters as a last resort.
+    """
+    tokens = re.split(r"(<[^>]+>)", text)
     chunks: list[str] = []
     current = ""
-    for paragraph in text.split("\n\n"):
-        if len(paragraph) > limit:
-            if current:
-                chunks.append(current)
-                current = ""
-            for i in range(0, len(paragraph), limit):
-                chunks.append(paragraph[i : i + limit])
+    open_tags: list[tuple[str, str]] = []  # (full opening tag, tag name)
+
+    def _carry() -> str:
+        return "".join(opening for opening, _ in open_tags)
+
+    def _close() -> str:
+        return "".join(f"</{name}>" for _, name in reversed(open_tags))
+
+    for tok in tokens:
+        if not tok:
             continue
-        candidate = f"{current}\n\n{paragraph}" if current else paragraph
-        if len(candidate) > limit:
-            chunks.append(current)
-            current = paragraph
+        stripped = tok.strip()
+        if stripped.startswith("<"):
+            is_closing = stripped.startswith("</")
+            name_part = stripped[2:-1] if is_closing else stripped[1:-1]
+            parts = name_part.split()
+            name = parts[0].rstrip("/").lower() if parts else ""
+            if is_closing:
+                for idx in range(len(open_tags) - 1, -1, -1):
+                    if open_tags[idx][1] == name:
+                        del open_tags[idx]
+                        break
+                current += tok
+            else:
+                self_closing = stripped.endswith("/>") or name in ("br", "img")
+                if self_closing:
+                    current += tok
+                else:
+                    if len(current) + len(tok) > limit and current:
+                        chunks.append(current + _close())
+                        current = _carry()
+                    open_tags.append((tok, name))
+                    current += tok
         else:
-            current = candidate
+            if len(current) + len(tok) > limit and current:
+                chunks.append(current + _close())
+                current = _carry()
+            if len(current) + len(tok) > limit:
+                carried = _carry()
+                room = limit - len(carried)
+                if room <= 0:
+                    if current:
+                        chunks.append(current)
+                    step = max(1, limit)
+                    for i in range(0, len(tok), step):
+                        chunks.append(tok[i : i + step])
+                    open_tags.clear()
+                    current = ""
+                else:
+                    for i in range(0, len(tok), room):
+                        chunks.append(carried + tok[i : i + room] + _close())
+                    current = carried
+            else:
+                current += tok
+
     if current:
         chunks.append(current)
     return chunks
@@ -220,6 +358,9 @@ def _format_release_notification(repo_name: str, release: ReleaseInfo, header: s
         f"<a href='{release['html_url']}'>{release['tag_name']}</a>"
         + (f" — {release['name']}" if release.get("name") and release["name"] != release["tag_name"] else ""),
     ]
-    if release.get("body"):
+    body_html = release.get("body_html") or ""
+    if body_html:
+        parts.append(_github_html_to_telegram(body_html))
+    elif release.get("body"):
         parts.append(html.escape(release["body"]))
     return "\n\n".join(parts)

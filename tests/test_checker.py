@@ -2,7 +2,11 @@
 
 import html
 
-from github.checker import _format_release_notification
+from github.checker import (
+    _format_release_notification,
+    _github_html_to_telegram,
+    _split_html_safe,
+)
 
 
 def test_format_release_notification_happy():
@@ -95,3 +99,77 @@ def test_format_release_notification_empty_body():
         "<a href='https://github.com/owner/repo/releases/tag/v1.0'>v1.0</a> — Release"
     )
     assert _format_release_notification("owner/repo", release) == expected
+
+
+def test_github_html_to_telegram_heading_dropped():
+    result = _github_html_to_telegram("<h1>Title</h1>")
+    assert "Title" in result
+    assert "<h1" not in result
+    assert "<b>Title</b>" not in result
+
+
+def test_github_html_to_telegram_div_dropped():
+    result = _github_html_to_telegram("<div>Hello</div>")
+    assert result == "Hello"
+
+
+def test_github_html_to_telegram_img_dropped():
+    result = _github_html_to_telegram('<p>Text <img src="x.png" alt="pic"> more</p>')
+    assert "<img" not in result
+    assert "Text" in result
+    assert "more" in result
+
+
+def test_github_html_to_telegram_pre_inner_code_clean():
+    result = _github_html_to_telegram("<pre><code>print(1)</code></pre>")
+    assert result == "<pre>print(1)</pre>"
+
+
+def test_github_html_to_telegram_a_href_kept():
+    result = _github_html_to_telegram('<a href="https://x.com" rel="nofollow">link</a>')
+    assert result == '<a href="https://x.com">link</a>'
+
+
+def test_format_release_notification_with_body_html():
+    release = {
+        "id": 1,
+        "tag_name": "v1.0",
+        "name": "Release",
+        "html_url": "https://github.com/owner/repo/releases/tag/v1.0",
+        "body": "<b>raw</b>",
+        "body_html": "<div><b>Hello</b></div><img src='x.png'>",
+        "published_at": "",
+    }
+    result = _format_release_notification("owner/repo", release)
+    assert "<b>Hello</b>" in result
+    assert "<div" not in result
+    assert "<img" not in result
+    # header/link lines unchanged
+    assert "🚀 Новый релиз <b>owner/repo</b>" in result
+
+
+def test_format_release_notification_body_html_fallback():
+    release = {
+        "id": 1,
+        "tag_name": "v1.0",
+        "name": "Release",
+        "html_url": "https://github.com/owner/repo/releases/tag/v1.0",
+        "body": "<script>alert(1)</script>",
+        "body_html": "",
+        "published_at": "",
+    }
+    result = _format_release_notification("owner/repo", release)
+    assert "<script>" not in result
+    assert "&lt;script&gt;" in result
+
+
+def test_split_html_safe_carries_open_tags():
+    text = "<b>first</b><i>second</i>"
+    chunks = _split_html_safe(text, limit=12)
+    # "first" alone is short; ensure splits keep tags valid and nothing is broken
+    joined = "".join(chunks)
+    assert joined == text
+    for chunk in chunks:
+        # every chunk must be well-formed: count of <b> equals </b>, etc.
+        assert chunk.count("<b>") == chunk.count("</b>")
+        assert chunk.count("<i>") == chunk.count("</i>")

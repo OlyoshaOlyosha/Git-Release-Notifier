@@ -66,6 +66,7 @@ class ReleaseInfo(TypedDict):
     name: str
     html_url: str
     body: str
+    body_html: str  # pre-rendered release body (subset converted for Telegram)
     published_at: str  # ISO 8601 date string
 
 

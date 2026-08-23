@@ -72,5 +72,6 @@ def _extract_release_info(api_data: dict) -> ReleaseInfo:
         name=api_data.get("name") or api_data["tag_name"],
         html_url=api_data["html_url"],
         body=api_data.get("body") or "",
+        body_html=api_data.get("body_html") or "",
         published_at=api_data.get("published_at", ""),
     )
