@@ -22,3 +22,4 @@ LOG_MAX_BYTES: int = 5 * 1024 * 1024  # 5 MB
 LOG_BACKUP_COUNT: int = 3  # Keep up to 3 rotated files
 
 PROXY_URL: str = os.getenv("PROXY_URL", "")
+ADMIN_USER_ID: int = int(os.getenv("ADMIN_USER_ID", "0"))  # 0 = disabled; admin receives API-failure alerts

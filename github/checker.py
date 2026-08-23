@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from core.config import API_DELAY_SEC, CHECK_INTERVAL_SEC
+from core.config import ADMIN_USER_ID, API_DELAY_SEC, CHECK_INTERVAL_SEC
 from core.models import CachedReleaseInfo, ReleaseInfo, load_subscriptions, save_subscriptions
 from github.github_api import fetch_last_n_releases, fetch_latest_release
 
@@ -16,6 +16,16 @@ if TYPE_CHECKING:
     from aiogram import Bot
 
 logger = logging.getLogger(__name__)
+
+
+async def notify_admin(bot: Bot, text: str) -> None:
+    """Send a diagnostic message to the admin (no-op if ADMIN_USER_ID is 0)."""
+    if ADMIN_USER_ID == 0:
+        return
+    try:
+        await bot.send_message(ADMIN_USER_ID, text)
+    except Exception:
+        logger.warning("Failed to notify admin: %s", text)
 
 
 async def run_check_cycle(bot: Bot) -> None:
@@ -47,6 +57,7 @@ async def run_check_cycle(bot: Bot) -> None:
                 recent_releases = await fetch_last_n_releases(owner, repo_name, 3)
             except Exception as e:
                 logger.warning("Failed to fetch releases for %s: %s", name, e)
+                await notify_admin(bot, f"GitHub API fetch failed for {name}: {e}")
             else:
                 # Build lightweight cached list from successfully fetched releases
                 cached = [

@@ -23,6 +23,7 @@ from aiogram.utils.markdown import hlink
 
 from core.config import REPOS_PER_PAGE
 from core.models import RepoEntry, load_subscriptions, save_subscriptions
+from github.checker import notify_admin
 from github.github_api import fetch_last_n_releases, fetch_latest_release, fetch_repo_info
 from ui.keyboards import (
     cancel_edit_keyboard,
@@ -254,6 +255,7 @@ async def handle_check_single(callback: CallbackQuery) -> None:
         latest = await fetch_latest_release(owner, repo_name)
         recent = await fetch_last_n_releases(owner, repo_name, 3)
     except Exception:
+        await notify_admin(callback.message.bot, f"GitHub API fetch failed (manual check) for {repo['name']}")
         await callback.message.edit_text("❌ Не удалось проверить релизы. Попробуйте позже.")
         return
 
@@ -463,6 +465,7 @@ async def process_edit_url(message: Message, state: FSMContext) -> None:
         info = await fetch_repo_info(owner, repo_name)
         full_name = info.get("full_name")
     except Exception:
+        await notify_admin(message.bot, f"GitHub API fetch failed (edit URL) for {url}")
         await message.answer("Не удалось получить информацию о репозитории. Проверьте ссылку.")
         return
     if not full_name:
@@ -516,6 +519,7 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
         try:
             releases = await fetch_last_n_releases(owner, repo_name, 3)
         except Exception:
+            await notify_admin(callback.message.bot, f"GitHub API fetch failed (repo detail) for {repo['name']}")
             await callback.message.edit_text("❌ Не удалось загрузить релизы. Попробуйте позже.")
             return
         # Update the repo's cache immediately
