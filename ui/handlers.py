@@ -502,7 +502,15 @@ async def process_edit_url(message: Message, state: FSMContext) -> None:
     old_name = repos[index]["name"]
     repos[index]["url"] = f"https://github.com/{full_name}"
     repos[index]["name"] = full_name
-    repos[index]["last_release_id"] = None  # reset because URL changed
+    # Set last_release_id to the current latest release so an already-known
+    # release is not reported as new. Fetch may fail or repo may have no
+    # releases -> fall back to None (same as before).
+    try:
+        latest = await fetch_latest_release(owner, repo_name)
+    except Exception:
+        latest = None
+    repos[index]["last_release_id"] = latest["id"] if latest else None
+    repos[index]["cached_releases"] = []  # old cache belongs to the old URL
     repos[index]["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _set_user_repos(uid, repos)
     logger.info("User %d updated repository URL: %s -> %s", uid, old_name, full_name)
