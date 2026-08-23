@@ -204,17 +204,19 @@ def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
     return chunks
 
 
-async def _send_release_notification(bot: Bot, uid: int, repo_name: str, release: ReleaseInfo) -> None:
+async def _send_release_notification(
+    bot: Bot, uid: int, repo_name: str, release: ReleaseInfo, header: str = "🚀 Новый релиз"
+) -> None:
     """Format and send a release notification, splitting into multiple messages if needed."""
-    text = _format_release_notification(repo_name, release)
+    text = _format_release_notification(repo_name, release, header=header)
     for chunk in _split_html_safe(text, limit=4000):
         await bot.send_message(uid, chunk, parse_mode="HTML", disable_web_page_preview=True)
 
 
-def _format_release_notification(repo_name: str, release: ReleaseInfo) -> str:
+def _format_release_notification(repo_name: str, release: ReleaseInfo, header: str = "🚀 Новый релиз") -> str:
     """Format a notification message for a new release (Russian)."""
     parts = [
-        f"🚀 Новый релиз <b>{repo_name}</b>",
+        f"{header} <b>{repo_name}</b>",
         f"<a href='{release['html_url']}'>{release['tag_name']}</a>"
         + (f" — {release['name']}" if release.get("name") and release["name"] != release["tag_name"] else ""),
     ]

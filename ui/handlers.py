@@ -23,8 +23,13 @@ from aiogram.utils.markdown import hlink
 
 from core.config import REPOS_PER_PAGE
 from core.models import RepoEntry, atomic_update, load_subscriptions
-from github.checker import notify_admin
-from github.github_api import fetch_last_n_releases, fetch_latest_release, fetch_repo_info
+from github.checker import _send_release_notification, notify_admin
+from github.github_api import (
+    fetch_last_n_releases,
+    fetch_latest_release,
+    fetch_release_by_tag,
+    fetch_repo_info,
+)
 from ui.keyboards import (
     cancel_edit_keyboard,
     check_list_keyboard,
@@ -400,6 +405,37 @@ async def handle_toggle_prerelease(callback: CallbackQuery) -> None:
     await show_repo_detail(callback, index)
 
 
+@router.callback_query(F.data.startswith("release_body:"))
+async def handle_release_body(callback: CallbackQuery) -> None:
+    """Fetch a single release by tag and show its body inline in the chat."""
+    _, index_str, rel_idx_str = callback.data.split(":", 2)
+    index = int(index_str)
+    rel_idx = int(rel_idx_str)
+    uid = callback.from_user.id
+    repos = _user_repos(uid)
+    if index < 0 or index >= len(repos):
+        await callback.answer("Неверный индекс репозитория.", show_alert=True)
+        return
+    repo = repos[index]
+    cached = repo.get("cached_releases", [])
+    if rel_idx < 0 or rel_idx >= len(cached):
+        await callback.answer("Неверный индекс релиза.", show_alert=True)
+        return
+    owner, repo_name = repo["name"].split("/", 1)
+    tag = cached[rel_idx]["tag_name"]
+    await callback.answer("Загружаю релиз…")
+    try:
+        release = await fetch_release_by_tag(owner, repo_name, tag)
+    except Exception:
+        await notify_admin(callback.message.bot, f"GitHub API fetch failed (release body) for {repo['name']} {tag}")
+        release = None
+    if release is None:
+        await callback.message.edit_text("❌ Не удалось загрузить релиз.")
+        return
+    await _send_release_notification(callback.message.bot, uid, repo["name"], release, header="📄 Релиз")
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("confirm_delete:"))
 async def confirm_delete(callback: CallbackQuery) -> None:
     """Delete a repo after user confirmation."""
@@ -631,7 +667,7 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
         text,
         parse_mode="HTML",
         disable_web_page_preview=True,
-        reply_markup=repo_detail_keyboard(index, repo.get("notify_prerelease", False)),
+        reply_markup=repo_detail_keyboard(index, repo.get("notify_prerelease", False), releases),
     )
 
 

@@ -34,6 +34,20 @@ async def fetch_latest_release(owner: str, repo: str) -> ReleaseInfo | None:
         return _extract_release_info(data)
 
 
+async def fetch_release_by_tag(owner: str, repo: str, tag: str) -> ReleaseInfo | None:
+    """Fetch a single release by its tag name.
+
+    Returns None on 404 (tag/release not found); otherwise raises on other errors.
+    """
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/tags/{tag}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+    async with aiohttp.ClientSession(headers=headers) as session, session.get(url) as resp:
+        if resp.status == 404:
+            return None
+        resp.raise_for_status()
+        return _extract_release_info(await resp.json())
+
+
 async def fetch_last_n_releases(
     owner: str, repo: str, n: int = 3, include_prerelease: bool = False
 ) -> list[ReleaseInfo]:
