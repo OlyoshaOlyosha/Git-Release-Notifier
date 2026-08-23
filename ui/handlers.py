@@ -154,6 +154,7 @@ async def cmd_help(message: Message) -> None:
         "🤖 <b>GitHub Release Tracker</b> — бот для отслеживания релизов.\n\n"
         "📋 <b>Мои репозитории</b> — просмотр отслеживаемых репозиториев.\n"
         "➕ <b>Добавить репозиторий</b> — начать отслеживание по ссылке.\n"
+        "/add &lt;ссылка&gt; — быстро добавить репозиторий по ссылке без диалога.\n"
         "/check — ручная проверка обновлений.\n"
         "/help — эта справка.",
         parse_mode="HTML",
@@ -190,6 +191,26 @@ async def cmd_check(message: Message) -> None:
         reply_markup=check_list_keyboard(repos, page=page, per_page=per_page),
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# Command: /add <url>
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("add"))
+async def cmd_add(message: Message) -> None:
+    """Add a GitHub repo directly by URL without the FSM dialog."""
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Отправьте ссылку: /add https://github.com/владелец/репозиторий")
+        return
+    url = parts[1].strip()
+    error = await _validate_and_add_repo(message.from_user.id, url)
+    if error:
+        await message.answer(error)
+    else:
+        await message.answer("✅ Репозиторий успешно добавлен!")
 
 
 # ---------------------------------------------------------------------------
