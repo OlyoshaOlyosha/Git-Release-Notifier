@@ -101,11 +101,10 @@ def test_format_release_notification_empty_body():
     assert _format_release_notification("owner/repo", release) == expected
 
 
-def test_github_html_to_telegram_heading_dropped():
-    result = _github_html_to_telegram("<h1>Title</h1>")
-    assert "Title" in result
-    assert "<h1" not in result
-    assert "<b>Title</b>" not in result
+def test_github_html_to_telegram_heading_bold():
+    result = _github_html_to_telegram("<h3>Upgrade</h3>")
+    assert "<b>Upgrade</b>" in result
+    assert "<h3" not in result
 
 
 def test_github_html_to_telegram_div_dropped():

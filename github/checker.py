@@ -209,6 +209,9 @@ class _TgHtmlConverter(HTMLParser):
         self._inside_pre = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._out.append("\n<b>")
+            return
         if tag == "img":
             return
         tg = self._ALLOWED_MAP.get(tag)
@@ -230,6 +233,9 @@ class _TgHtmlConverter(HTMLParser):
             self._inside_pre += 1
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._out.append("</b>\n")
+            return
         if tag == "img":
             return
         tg = self._ALLOWED_MAP.get(tag)
