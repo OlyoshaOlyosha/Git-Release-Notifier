@@ -101,6 +101,12 @@ def test_format_release_notification_empty_body():
     assert _format_release_notification("owner/repo", release) == expected
 
 
+def test_github_html_to_telegram_br_to_newline():
+    # Both <br> (starttag) and <br/> (startendtag) must become literal newlines.
+    assert _github_html_to_telegram("line1<br>line2<br/>line3") == "line1\nline2\nline3"
+    assert "<br" not in _github_html_to_telegram("a<br>b")
+
+
 def test_github_html_to_telegram_heading_bold():
     result = _github_html_to_telegram("<h3>Upgrade</h3>")
     assert "<b>Upgrade</b>" in result

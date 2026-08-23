@@ -238,7 +238,7 @@ class _TgHtmlConverter(HTMLParser):
             href = dict(attrs).get("href", "")
             self._out.append(f'<a href="{html.escape(href, quote=True)}">')
         elif tg == "br":
-            self._out.append("<br>")
+            self._out.append("\n")
         else:
             self._out.append(f"<{tg}>")
         if tg == "pre":
@@ -270,7 +270,7 @@ class _TgHtmlConverter(HTMLParser):
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
         # Self-closing forms: <br/>, <img/>, <hr/>, etc.
         if tag == "br":
-            self._out.append("<br>")
+            self._out.append("\n")
             return
         if tag == "img":
             src = dict(attrs).get("src", "")
