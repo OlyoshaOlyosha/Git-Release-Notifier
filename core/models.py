@@ -6,11 +6,30 @@ load/save functions for the subscriptions file.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 from core.config import SUBSCRIPTIONS_FILE
+
+# Serializes all read-modify-write mutations of subscriptions.json so that
+# interleaved writes (background checker vs. user commands) cannot clobber
+# each other. Held only around load+mutate+save, never around network calls.
+SUBS_LOCK = asyncio.Lock()
+
+
+async def atomic_update(mutator: Callable[[Subscriptions], None]) -> None:
+    """Apply a mutation to the subscriptions with a serialized read-modify-write.
+
+    The mutator receives the freshly loaded subscriptions dict and mutates it
+    in place; the result is then persisted atomically. The lock is released
+    before any network I/O, so callers must not perform fetches inside mutator.
+    """
+    async with SUBS_LOCK:
+        subs = load_subscriptions()
+        mutator(subs)
+        save_subscriptions(subs)
 
 
 class CachedReleaseInfo(TypedDict):

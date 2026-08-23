@@ -22,7 +22,7 @@ from aiogram.types import (
 from aiogram.utils.markdown import hlink
 
 from core.config import REPOS_PER_PAGE
-from core.models import RepoEntry, load_subscriptions, save_subscriptions
+from core.models import RepoEntry, atomic_update, load_subscriptions
 from github.checker import notify_admin
 from github.github_api import fetch_last_n_releases, fetch_latest_release, fetch_repo_info
 from ui.keyboards import (
@@ -59,13 +59,15 @@ def _user_repos(uid: int) -> list[RepoEntry]:
     return subs.get("users", {}).get(uid, [])
 
 
-def _set_user_repos(uid: int, repos: list[RepoEntry]) -> None:
-    """Replace the entire repo list for a user and persist."""
-    subs = load_subscriptions()
-    if "users" not in subs:
-        subs["users"] = {}
-    subs["users"][uid] = repos
-    save_subscriptions(subs)
+async def _set_user_repos(uid: int, repos: list[RepoEntry]) -> None:
+    """Replace the entire repo list for a user and persist (serialized)."""
+
+    def _apply(subs: dict) -> None:
+        if "users" not in subs:
+            subs["users"] = {}
+        subs["users"][uid] = repos
+
+    await atomic_update(_apply)
 
 
 def _parse_owner_repo(url: str) -> tuple[str, str] | None:
@@ -107,11 +109,8 @@ async def _validate_and_add_repo(uid: int, url: str) -> str | None:
     full_name = info.get("full_name")
     if not full_name:
         return "Некорректный ответ API. Попробуйте ещё раз."
-    repos = _user_repos(uid)
-    if any(r["name"] == full_name for r in repos):
-        return "Вы уже отслеживаете этот репозиторий."
 
-    # Fetch latest release to set the initial last_release_id
+    # Fetch latest release to set the initial last_release_id (network, before lock)
     try:
         latest = await fetch_latest_release(owner, repo)
     except Exception:
@@ -124,8 +123,22 @@ async def _validate_and_add_repo(uid: int, url: str) -> str | None:
         "cached_releases": [],
         "last_checked": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    repos.append(new_entry)
-    _set_user_repos(uid, repos)
+
+    duplicate = False
+
+    def _apply(subs: dict) -> None:
+        nonlocal duplicate
+        user_repos = subs["users"].get(uid, [])
+        # Duplicate check and append must be serialized to avoid lost updates
+        if any(r["name"] == full_name for r in user_repos):
+            duplicate = True
+            return
+        user_repos.append(new_entry)
+        subs["users"][uid] = user_repos
+
+    await atomic_update(_apply)
+    if duplicate:
+        return "Вы уже отслеживаете этот репозиторий."
     return None
 
 
@@ -267,9 +280,9 @@ async def handle_check_single(callback: CallbackQuery) -> None:
         else:
             logger.info("Manual check: no new release for %s", repo["name"])
 
-    # Update repo data
-    repo["last_release_id"] = latest["id"] if latest else repo.get("last_release_id")
-    repo["cached_releases"] = [
+    # Update repo data (mutate inside the lock to avoid lost updates)
+    new_last_id = latest["id"] if latest else repo.get("last_release_id")
+    new_cached = [
         {
             "tag_name": r["tag_name"],
             "name": r["name"],
@@ -278,8 +291,17 @@ async def handle_check_single(callback: CallbackQuery) -> None:
         }
         for r in recent
     ]
-    repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _set_user_repos(uid, repos)
+    new_last_checked = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _apply(subs: dict) -> None:
+        user_repos = subs["users"].get(uid, [])
+        if 0 <= index < len(user_repos):
+            r = user_repos[index]
+            r["last_release_id"] = new_last_id
+            r["cached_releases"] = new_cached
+            r["last_checked"] = new_last_checked
+
+    await atomic_update(_apply)
 
     # Show the updated detail
     await show_repo_detail(callback, index)
@@ -374,7 +396,7 @@ async def handle_toggle_prerelease(callback: CallbackQuery) -> None:
         return
     repo = repos[index]
     repo["notify_prerelease"] = not repo.get("notify_prerelease", False)
-    _set_user_repos(uid, repos)
+    await _set_user_repos(uid, repos)
     await show_repo_detail(callback, index)
 
 
@@ -389,8 +411,13 @@ async def confirm_delete(callback: CallbackQuery) -> None:
         await callback.answer("Неверный репозиторий.", show_alert=True)
         return
     deleted_name = repos[index]["name"]
-    del repos[index]
-    _set_user_repos(uid, repos)
+
+    def _apply(subs: dict) -> None:
+        user_repos = subs["users"].get(uid, [])
+        if 0 <= index < len(user_repos):
+            del user_repos[index]
+
+    await atomic_update(_apply)
     logger.info("User %d deleted repository: %s", uid, deleted_name)
     await callback.message.edit_text(f"🗑 Репозиторий {deleted_name} удалён.")
     await callback.answer(f"{deleted_name} удалён.")
@@ -500,8 +527,6 @@ async def process_edit_url(message: Message, state: FSMContext) -> None:
         return
 
     old_name = repos[index]["name"]
-    repos[index]["url"] = f"https://github.com/{full_name}"
-    repos[index]["name"] = full_name
     # Set last_release_id to the current latest release so an already-known
     # release is not reported as new. Fetch may fail or repo may have no
     # releases -> fall back to None (same as before).
@@ -509,10 +534,20 @@ async def process_edit_url(message: Message, state: FSMContext) -> None:
         latest = await fetch_latest_release(owner, repo_name)
     except Exception:
         latest = None
-    repos[index]["last_release_id"] = latest["id"] if latest else None
-    repos[index]["cached_releases"] = []  # old cache belongs to the old URL
-    repos[index]["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _set_user_repos(uid, repos)
+    new_last_id = latest["id"] if latest else None
+    new_last_checked = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _apply(subs: dict) -> None:
+        user_repos = subs["users"].get(uid, [])
+        if 0 <= index < len(user_repos):
+            r = user_repos[index]
+            r["url"] = f"https://github.com/{full_name}"
+            r["name"] = full_name
+            r["last_release_id"] = new_last_id
+            r["cached_releases"] = []  # old cache belongs to the old URL
+            r["last_checked"] = new_last_checked
+
+    await atomic_update(_apply)
     logger.info("User %d updated repository URL: %s -> %s", uid, old_name, full_name)
     await state.clear()
     await message.answer("✅ Репозиторий успешно обновлён!", reply_markup=main_menu_keyboard())
@@ -546,8 +581,8 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
             await notify_admin(callback.message.bot, f"GitHub API fetch failed (repo detail) for {repo['name']}")
             await callback.message.edit_text("❌ Не удалось загрузить релизы. Попробуйте позже.")
             return
-        # Update the repo's cache immediately
-        repo["cached_releases"] = [
+        # Update the repo's cache immediately (mutate inside the lock)
+        new_cached = [
             {
                 "tag_name": r["tag_name"],
                 "name": r["name"],
@@ -556,7 +591,14 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
             }
             for r in releases
         ]
-        _set_user_repos(callback.from_user.id, repos)  # persist the update
+        uid = callback.from_user.id
+
+        def _apply(subs: dict) -> None:
+            user_repos = subs["users"].get(uid, [])
+            if 0 <= index < len(user_repos):
+                user_repos[index]["cached_releases"] = new_cached
+
+        await atomic_update(_apply)
     else:
         releases = cached  # use the cached list directly
         await callback.answer()

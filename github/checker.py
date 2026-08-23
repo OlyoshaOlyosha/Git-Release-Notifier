@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from core.config import ADMIN_USER_ID, API_DELAY_SEC, CHECK_INTERVAL_SEC
-from core.models import CachedReleaseInfo, ReleaseInfo, load_subscriptions, save_subscriptions
+from core.models import CachedReleaseInfo, ReleaseInfo, atomic_update, load_subscriptions
 from github.github_api import fetch_last_n_releases, fetch_latest_release
 
 if TYPE_CHECKING:
@@ -29,7 +29,13 @@ async def notify_admin(bot: Bot, text: str) -> None:
 
 
 async def run_check_cycle(bot: Bot) -> None:
-    """Perform a single check cycle for all repos: fetch releases, update cache, notify."""
+    """Perform a single check cycle for all repos: fetch releases, update cache, notify.
+
+    Reads the subscription snapshot once for enumeration, fetches releases
+    (network, outside any lock), then persists all cache/last_release updates in
+    a single serialized read-modify-write. Notifications are sent after the
+    lock is released so the bot is never blocked on I/O while holding it.
+    """
     logger.info("Starting background check cycle")
 
     try:
@@ -47,9 +53,12 @@ async def run_check_cycle(bot: Bot) -> None:
                     unique_repos[name] = {"url": repo["url"], "users": []}
                 unique_repos[name]["users"].append(uid)
 
+        # Collected across all repos so we can persist in one atomic write.
+        updates: list[dict] = []  # {"uid", "name", "cached", "ts", "new_id"}
+        to_notify: list[tuple[int, str, ReleaseInfo]] = []  # (uid, name, best_release)
+
         for name, info in unique_repos.items():
             owner, repo_name = name.split("/", 1)
-            repo_modified = False
 
             # Determine whether any subscriber wants pre-release notifications for this repo
             notify = False
@@ -79,6 +88,7 @@ async def run_check_cycle(bot: Bot) -> None:
                     )
                     for r in recent_releases
                 ]
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
                 # Update every user who subscribes to this repo
                 for uid in info["users"]:
@@ -86,41 +96,65 @@ async def run_check_cycle(bot: Bot) -> None:
                     if not user_repos:
                         continue
                     for repo in user_repos:
-                        if repo.get("name") == name:
-                            repo["cached_releases"] = cached
-                            repo["last_checked"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            repo_modified = True
+                        if repo.get("name") != name:
+                            continue
 
-                            # Build notification candidates: the latest release, plus pre-releases if enabled
-                            candidates = []
-                            if latest_release:
-                                candidates.append(latest_release)
-                            if repo.get("notify_prerelease", False):
-                                for r in recent_releases:
-                                    if r.get("prerelease"):
-                                        candidates.append(r)
+                        # Build notification candidates: the latest release, plus pre-releases if enabled
+                        candidates = []
+                        if latest_release:
+                            candidates.append(latest_release)
+                        if repo.get("notify_prerelease", False):
+                            for r in recent_releases:
+                                if r.get("prerelease"):
+                                    candidates.append(r)
 
-                            if candidates:
-                                best = max(candidates, key=lambda r: r["id"])
-                                new_id = best["id"]
-                                old_id = repo.get("last_release_id")
-                                if old_id is None or old_id < new_id:
-                                    logger.info(
-                                        "New release detected for %s (id=%d), notifying user %d", name, new_id, uid
-                                    )
-                                    repo["last_release_id"] = new_id
-                                    try:
-                                        await _send_release_notification(bot, uid, repo["name"], best)
-                                        logger.info("Notification sent to user %d for %s", uid, name)
-                                    except Exception as e:
-                                        logger.warning("Could not notify user %d: %s", uid, e)
-                                else:
-                                    logger.info("No new release for %s", name)
+                        new_id = None
+                        if candidates:
+                            best = max(candidates, key=lambda r: r["id"])
+                            candidate_id = best["id"]
+                            old_id = repo.get("last_release_id")
+                            if old_id is None or old_id < candidate_id:
+                                new_id = candidate_id
+                                logger.info("New release detected for %s (id=%d), notifying user %d", name, new_id, uid)
+                                to_notify.append((uid, name, best))
+                            else:
+                                logger.info("No new release for %s", name)
 
-            if repo_modified:
-                save_subscriptions(subs)
+                        updates.append(
+                            {
+                                "uid": uid,
+                                "name": name,
+                                "cached": cached,
+                                "ts": ts,
+                                "new_id": new_id,
+                            }
+                        )
 
             await asyncio.sleep(API_DELAY_SEC)
+
+        # Persist all cache/last_release updates in a single serialized write.
+        def _apply(subs_snapshot: dict) -> None:
+            for u in updates:
+                uid = u["uid"]
+                user_repos = subs_snapshot["users"].get(uid, [])
+                for repo in user_repos:
+                    if repo.get("name") == u["name"]:
+                        repo["cached_releases"] = u["cached"]
+                        repo["last_checked"] = u["ts"]
+                        if u["new_id"] is not None:
+                            repo["last_release_id"] = u["new_id"]
+                        break
+
+        if updates:
+            await atomic_update(_apply)
+
+        # Send notifications outside the lock so I/O never blocks the lock.
+        for uid, name, best in to_notify:
+            try:
+                await _send_release_notification(bot, uid, name, best)
+                logger.info("Notification sent to user %d for %s", uid, name)
+            except Exception as e:
+                logger.warning("Could not notify user %d: %s", uid, e)
 
     except Exception:
         logger.exception("Error in background checker loop")
