@@ -109,14 +109,13 @@ async def background_checker(bot: Bot) -> None:
     For each unique repository, fetches the latest release to detect new ones
     and also refreshes the cached list of the last 3 releases.
     """
+    # Run the first check cycle immediately on startup, then keep hourly cadence.
+    await run_check_cycle(bot)
+
     while True:
-        # Wait one full interval before performing the very first check
-        # to avoid consuming GitHub API rate limits immediately after bot start.
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
         await run_check_cycle(bot)
-
-        await asyncio.sleep(CHECK_INTERVAL_SEC)
 
 
 def _format_release_notification(repo_name: str, release: ReleaseInfo) -> str:
