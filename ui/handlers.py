@@ -156,6 +156,7 @@ async def cmd_help(message: Message) -> None:
         "➕ <b>Добавить репозиторий</b> — начать отслеживание по ссылке.\n"
         "/add &lt;ссылка&gt; — быстро добавить репозиторий по ссылке без диалога.\n"
         "/check — ручная проверка обновлений.\n"
+        "/export — выгрузить список ваших репозиториев (ссылками).\n"
         "/help — эта справка.",
         parse_mode="HTML",
     )
@@ -191,6 +192,22 @@ async def cmd_check(message: Message) -> None:
         reply_markup=check_list_keyboard(repos, page=page, per_page=per_page),
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# Command: /export
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("export"))
+async def cmd_export(message: Message) -> None:
+    """Send the user's tracked repos as a newline-separated list of URLs."""
+    repos = _user_repos(message.from_user.id)
+    if not repos:
+        await message.answer("У вас нет отслеживаемых репозиториев.")
+        return
+    text = "\n".join(repo["url"] for repo in repos)
+    await message.answer(text)
 
 
 # ---------------------------------------------------------------------------
