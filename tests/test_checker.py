@@ -180,6 +180,20 @@ def test_split_html_safe_carries_open_tags():
         assert chunk.count("<i>") == chunk.count("</i>")
 
 
+def test_split_html_safe_closes_open_tags_in_final_chunk():
+    # An <a> opening tag followed by more than `limit` chars of text and no
+    # matching </a>: the open tag stays open past the split, so the final chunk
+    # (and every chunk) must be closed by the fix to stay valid Telegram HTML.
+    text = '<a href="u">' + "y" * 50
+    chunks = _split_html_safe(text, limit=20)
+    assert chunks
+    # Every chunk, including the LAST, must be internally balanced.
+    for chunk in chunks:
+        assert_balanced(chunk)
+    # The full concatenation must be balanced (valid Telegram HTML).
+    assert_balanced("".join(chunks))
+
+
 # ---------------------------------------------------------------------------
 # _render_release_body (caching + fallback)
 # ---------------------------------------------------------------------------

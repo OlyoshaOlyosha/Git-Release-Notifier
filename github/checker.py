@@ -389,7 +389,7 @@ def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
                 current += tok
 
     if current:
-        chunks.append(current)
+        chunks.append(current + _close())
     return chunks
 
 
