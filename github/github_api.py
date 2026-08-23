@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import aiohttp
+import json
 
 from core.config import GITHUB_TOKEN
 from core.models import ReleaseInfo
 
 GITHUB_API_BASE = "https://api.github.com"
+
+
+async def render_markdown(body: str) -> str:
+    """Render GitHub-Flavored Markdown to HTML via GitHub's /markdown endpoint."""
+    url = f"{GITHUB_API_BASE}/markdown"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+    headers["Content-Type"] = "application/json"
+    payload = json.dumps({"text": body, "mode": "gfm"}).encode()
+    async with aiohttp.ClientSession(headers=headers) as session, session.post(url, data=payload) as resp:
+        resp.raise_for_status()
+        return await resp.text()
 
 
 async def fetch_repo_info(owner: str, repo: str) -> dict:

@@ -129,20 +129,21 @@ def test_github_html_to_telegram_a_href_kept():
     assert result == '<a href="https://x.com">link</a>'
 
 
-def test_format_release_notification_with_body_html():
+def test_format_release_notification_with_rendered_body():
     release = {
         "id": 1,
         "tag_name": "v1.0",
         "name": "Release",
         "html_url": "https://github.com/owner/repo/releases/tag/v1.0",
         "body": "<b>raw</b>",
-        "body_html": "<div><b>Hello</b></div><img src='x.png'>",
+        "body_html": "",
         "published_at": "",
     }
-    result = _format_release_notification("owner/repo", release)
+    rendered = _github_html_to_telegram("<div><b>Hello</b></div><img src='x.png'>")
+    result = _format_release_notification("owner/repo", release, rendered_body=rendered)
     assert "<b>Hello</b>" in result
     assert "<div" not in result
-    assert "<img" not in result
+    assert "<h3" not in result
     # header/link lines unchanged
     assert "🚀 Новый релиз <b>owner/repo</b>" in result
 
@@ -160,6 +161,16 @@ def test_format_release_notification_body_html_fallback():
     result = _format_release_notification("owner/repo", release)
     assert "<script>" not in result
     assert "&lt;script&gt;" in result
+
+
+def test_github_html_to_telegram_img_in_anchor_no_nested_anchor():
+    result = _github_html_to_telegram('<a href="U"><img src="U" alt="Logo"></a>')
+    assert result == '<a href="U">🖼 Logo</a>'
+
+
+def test_github_html_to_telegram_standalone_img_to_link():
+    result = _github_html_to_telegram('<img src="U" alt="X">')
+    assert result == '<a href="U">🖼 X</a>'
 
 
 def test_split_html_safe_carries_open_tags():

@@ -12,12 +12,15 @@ from typing import TYPE_CHECKING
 
 from core.config import ADMIN_USER_ID, API_DELAY_SEC, CHECK_INTERVAL_SEC
 from core.models import CachedReleaseInfo, ReleaseInfo, atomic_update, load_subscriptions
-from github.github_api import fetch_last_n_releases, fetch_latest_release
+from github.github_api import fetch_last_n_releases, fetch_latest_release, render_markdown
 
 if TYPE_CHECKING:
     from aiogram import Bot
 
 logger = logging.getLogger(__name__)
+
+# Cache rendered release bodies by release id to avoid re-rendering on every cycle.
+RENDER_CACHE: dict[int, str] = {}
 
 
 async def notify_admin(bot: Bot, text: str) -> None:
@@ -207,12 +210,20 @@ class _TgHtmlConverter(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._out: list[str] = []
         self._inside_pre = 0
+        self._a_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._out.append("\n<b>")
             return
         if tag == "img":
+            src = dict(attrs).get("src", "")
+            alt = dict(attrs).get("alt", "")
+            label = html.escape(f"🖼 {alt}") if alt else "🖼 изображение"
+            if self._a_depth > 0:
+                self._out.append(label)
+            else:
+                self._out.append(f'<a href="{html.escape(src, quote=True)}">{label}</a>')
             return
         tg = self._ALLOWED_MAP.get(tag)
         if tg is None:
@@ -223,6 +234,7 @@ class _TgHtmlConverter(HTMLParser):
         if tg == "code" and self._inside_pre > 0:
             return  # already inside <pre>; don't wrap in <code>
         if tg == "a":
+            self._a_depth += 1
             href = dict(attrs).get("href", "")
             self._out.append(f'<a href="{html.escape(href, quote=True)}">')
         elif tg == "br":
@@ -248,6 +260,7 @@ class _TgHtmlConverter(HTMLParser):
         if tg == "br":
             return
         if tg == "a":
+            self._a_depth = max(0, self._a_depth - 1)
             self._out.append("</a>")
         else:
             self._out.append(f"</{tg}>")
@@ -260,6 +273,13 @@ class _TgHtmlConverter(HTMLParser):
             self._out.append("<br>")
             return
         if tag == "img":
+            src = dict(attrs).get("src", "")
+            alt = dict(attrs).get("alt", "")
+            label = html.escape(f"🖼 {alt}") if alt else "🖼 изображение"
+            if self._a_depth > 0:
+                self._out.append(label)
+            else:
+                self._out.append(f'<a href="{html.escape(src, quote=True)}">{label}</a>')
             return
         # Any other self-closing tag is dropped (kept tags like <a/> don't carry content).
 
@@ -268,13 +288,37 @@ class _TgHtmlConverter(HTMLParser):
 
 
 def _github_html_to_telegram(html_text: str) -> str:
-    """Convert GitHub release ``body_html`` to a Telegram-safe HTML string."""
+    """Convert GitHub release HTML to a Telegram-safe HTML string."""
     parser = _TgHtmlConverter()
     parser.feed(html_text)
     parser.close()
     result = "".join(parser._out)
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
+
+
+async def _render_release_body(release: ReleaseInfo) -> str:
+    """Render a release body (GFM markdown) to Telegram-safe HTML, with caching.
+
+    GitHub's release object only carries raw ``body`` (GFM markdown), so we render
+    it via GitHub's ``/markdown`` endpoint, then sanitize to Telegram's HTML subset.
+    Failures fall back to escaping the raw markdown (uncached).
+    """
+    body = release.get("body") or ""
+    if not body:
+        return ""
+    rid = release.get("id")
+    if rid and rid in RENDER_CACHE:
+        return RENDER_CACHE[rid]
+    try:
+        html_text = await render_markdown(body)
+    except Exception as e:  # noqa: BLE001 - network/render can fail in many ways; fall back gracefully
+        logger.warning("markdown render failed: %s", e)
+        return html.escape(body)
+    tg = _github_html_to_telegram(html_text)
+    if rid:
+        RENDER_CACHE[rid] = tg
+    return tg
 
 
 def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
@@ -352,21 +396,23 @@ async def _send_release_notification(
     bot: Bot, uid: int, repo_name: str, release: ReleaseInfo, header: str = "🚀 Новый релиз"
 ) -> None:
     """Format and send a release notification, splitting into multiple messages if needed."""
-    text = _format_release_notification(repo_name, release, header=header)
+    rendered = await _render_release_body(release)
+    text = _format_release_notification(repo_name, release, rendered_body=rendered, header=header)
     for chunk in _split_html_safe(text, limit=4000):
         await bot.send_message(uid, chunk, parse_mode="HTML", disable_web_page_preview=True)
 
 
-def _format_release_notification(repo_name: str, release: ReleaseInfo, header: str = "🚀 Новый релиз") -> str:
+def _format_release_notification(
+    repo_name: str, release: ReleaseInfo, rendered_body: str = "", header: str = "🚀 Новый релиз"
+) -> str:
     """Format a notification message for a new release (Russian)."""
     parts = [
         f"{header} <b>{repo_name}</b>",
         f"<a href='{release['html_url']}'>{release['tag_name']}</a>"
         + (f" — {release['name']}" if release.get("name") and release["name"] != release["tag_name"] else ""),
     ]
-    body_html = release.get("body_html") or ""
-    if body_html:
-        parts.append(_github_html_to_telegram(body_html))
+    if rendered_body:
+        parts.append(rendered_body)
     elif release.get("body"):
         parts.append(html.escape(release["body"]))
     return "\n\n".join(parts)
