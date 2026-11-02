@@ -56,6 +56,17 @@ async def main() -> None:
     else:
         bot = Bot(token=config.BOT_TOKEN)
 
+    # Verify Telegram API access before starting any long-running work. This
+    # turns a silent 60s hang inside start_polling (bot.me() with no error
+    # surfaced) into an immediate, actionable failure.
+    try:
+        me = await bot.me()
+    except Exception:
+        logger.exception("Failed to authorize bot with Telegram API (proxy=%r)", config.PROXY_URL or None)
+        await bot.session.close()
+        raise
+    logger.info("Bot authorized as @%s (id=%s)", me.username, me.id)
+
     # One‑shot mode: run a single check and exit
     if "--once" in sys.argv:
         await run_check_cycle(bot)
@@ -65,10 +76,15 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(router)
 
-    # Launch the background checker as a task so we can cancel it on shutdown
-    checker_task = asyncio.create_task(background_checker(bot))
+    # Launch the background checker and polling as named tasks so their
+    # lifecycle is observable: a polling crash must abort the process instead
+    # of being swallowed by the event loop.
+    checker_task = asyncio.create_task(background_checker(bot), name="checker")
+    polling_task = asyncio.create_task(dp.start_polling(bot), name="polling")
 
-    # Setup signal handler for graceful termination
+    # Unix: add_signal_handler enables graceful SIGINT/SIGTERM. On Windows it
+    # raises NotImplementedError (suppressed); asyncio.run's KeyboardInterrupt
+    # handling still reaches the finally block below for a clean shutdown.
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -80,20 +96,32 @@ async def main() -> None:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _signal_handler)
 
-    try:
-        # Start polling and wait until a stop signal is received
-        polling_task = asyncio.create_task(dp.start_polling(bot))
-        await stop_event.wait()
-        polling_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await polling_task
-    finally:
-        checker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await checker_task
+    stop_task = asyncio.create_task(stop_event.wait(), name="stop_event")
 
+    try:
+        # Wait for whichever happens first: shutdown requested, polling crashed,
+        # or the background checker crashed (it should never return normally).
+        done, _ = await asyncio.wait(
+            {polling_task, checker_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            if task is stop_task:
+                logger.info("Stop event received, shutting down...")
+                continue
+            exc = task.exception() if not task.cancelled() else None
+            if exc is not None:
+                logger.error("%s task crashed", task.get_name(), exc_info=exc)
+    finally:
+        for task in (polling_task, checker_task, stop_task):
+            task.cancel()
+        await asyncio.gather(polling_task, checker_task, stop_task, return_exceptions=True)
         await bot.session.close()
+        logger.info("Bot stopped")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
