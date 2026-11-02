@@ -16,10 +16,10 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
+    InputRichMessage,
     Message,
     ReplyKeyboardRemove,
 )
-from aiogram.utils.markdown import hlink
 
 from core.config import REPOS_PER_PAGE
 from core.models import RepoEntry, atomic_update, load_subscriptions
@@ -432,7 +432,9 @@ async def handle_release_body(callback: CallbackQuery) -> None:
     if release is None:
         await callback.message.edit_text("❌ Не удалось загрузить релиз.")
         return
-    await _send_release_notification(callback.message.bot, uid, repo["name"], release, header="📄 Релиз")
+    await _send_release_notification(
+        callback.message.bot, uid, repo["name"], release, header="📄 Релиз", repo_index=index
+    )
     await callback.answer()
 
 
@@ -639,10 +641,10 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
         releases = cached  # use the cached list directly
         await callback.answer()
 
-    # Build message text
-    text = f"<b>{repo['name']}</b>\n{repo['url']}\n\n"
+    # Build Rich HTML for the detail view.
+    paragraphs = [f"<b>{repo['name']}</b><br>{repo['url']}"]
     if releases:
-        text += "<b>Последние релизы:</b>\n"
+        rel_lines = ["<b>Последние релизы:</b>"]
         for rel in releases:
             date_str = ""
             if rel.get("published_at"):
@@ -651,22 +653,22 @@ async def show_repo_detail(callback: CallbackQuery, index: int) -> None:
                     date_str = dt.strftime("%Y.%m.%d")
                 except ValueError:
                     date_str = rel["published_at"]
-            text += f"• {hlink(rel['tag_name'], rel['html_url'])}"
+            line = f'• <a href="{rel["html_url"]}">{rel["tag_name"]}</a>'
             if rel.get("name") != rel["tag_name"]:
-                text += f" - {rel['name']}"
+                line += f" - {rel['name']}"
             if date_str:
-                text += f" ({date_str})"
-            text += "\n"
+                line += f" ({date_str})"
+            rel_lines.append(line)
+        paragraphs.append("<br>".join(rel_lines))
     else:
-        text += "Релизы не найдены."
+        paragraphs.append("Релизы не найдены.")
 
     last_line = _format_last_checked(repo.get("last_checked", ""))
-    text += f"\n<i>Последняя проверка: {last_line}</i>"
+    paragraphs.append(f"<i>Последняя проверка: {last_line}</i>")
+    rich_html = "<br><br>".join(paragraphs)
 
     await callback.message.edit_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
+        rich_message=InputRichMessage(html=rich_html),
         reply_markup=repo_detail_keyboard(index, repo.get("notify_prerelease", False), releases),
     )
 

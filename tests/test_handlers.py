@@ -157,8 +157,9 @@ async def test_toggle_prerelease_invalid_index(tmp_subs, fake_bot):
 async def test_handle_release_body(tmp_subs, fake_bot, monkeypatch):
     captured = {}
 
-    async def _send(bot, uid, name, release, header="📄 Релиз"):
+    async def _send(bot, uid, name, release, header="📄 Релиз", repo_index=None):
         captured["args"] = (bot, uid, name, release, header)
+        captured["repo_index"] = repo_index
 
     async def _by_tag(o, r, tag):
         return make_release(rid=99, tag=tag)
@@ -171,6 +172,7 @@ async def test_handle_release_body(tmp_subs, fake_bot, monkeypatch):
     assert captured["args"][1] == 7
     assert captured["args"][2] == "o/r"
     assert captured["args"][3]["id"] == 99
+    assert captured["repo_index"] == 0  # triggers "back to repo" button
     cb.answer.assert_awaited()
 
 

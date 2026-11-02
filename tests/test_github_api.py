@@ -1,6 +1,5 @@
 """Tests for the GitHub API network layer in github.github_api."""
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,7 +10,6 @@ from github.github_api import (
     fetch_latest_release,
     fetch_release_by_tag,
     fetch_repo_info,
-    render_markdown,
 )
 from github.github_api import _extract_release_info
 
@@ -198,56 +196,6 @@ async def test_fetch_last_n_releases_filters():
     # include_prerelease=True -> prerelease kept, draft excluded -> ids 2, 3 (input order)
     assert [r["id"] for r in out_true] == [2, 3]
     assert [r["prerelease"] for r in out_true] == [True, False]
-
-
-async def test_render_markdown_payload_and_auth_header(monkeypatch):
-    captured = {}
-    resp = _response(status=200, text="<html>RENDERED</html>")
-    session = AsyncMock()
-    session.__aenter__.return_value = session
-    session.__aexit__.return_value = False
-    session.get = MagicMock()
-
-    def _post(url, data=None, **kwargs):
-        captured["url"] = url
-        captured["data"] = data
-        return _ctx(resp)
-
-    session.post = MagicMock(side_effect=_post)
-
-    def _make_session(*args, **kwargs):
-        captured["headers"] = kwargs.get("headers", {})
-        return session
-
-    with patch.object(gh.aiohttp, "ClientSession", side_effect=_make_session):
-        monkeypatch.setattr(gh, "GITHUB_TOKEN", "SECRET")
-        text = await render_markdown("**hi**")
-
-    assert captured["url"].endswith("/markdown")
-    payload = json.loads(captured["data"])
-    assert payload["text"] == "**hi**"
-    assert payload["mode"] == "gfm"
-    assert captured["headers"].get("Authorization") == "token SECRET"
-    assert text == "<html>RENDERED</html>"
-
-
-async def test_render_markdown_no_token_no_auth_header(monkeypatch):
-    resp = _response(status=200, text="x")
-    session = AsyncMock()
-    session.__aenter__.return_value = session
-    session.__aexit__.return_value = False
-    session.get = MagicMock()
-    session.post = MagicMock(return_value=_ctx(resp))
-    captured = {}
-
-    def _make_session(*args, **kwargs):
-        captured["headers"] = kwargs.get("headers", {})
-        return session
-
-    with patch.object(gh.aiohttp, "ClientSession", side_effect=_make_session):
-        monkeypatch.setattr(gh, "GITHUB_TOKEN", "")
-        await render_markdown("t")
-    assert "Authorization" not in captured["headers"]
 
 
 async def test_fetch_repo_info_200():

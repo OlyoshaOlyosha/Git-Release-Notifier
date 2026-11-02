@@ -7,12 +7,14 @@ import html
 import logging
 import re
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 from typing import TYPE_CHECKING
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
+from tg_rich_converter import to_rich
 
 from core.config import ADMIN_USER_ID, API_DELAY_SEC, CHECK_INTERVAL_SEC
 from core.models import CachedReleaseInfo, ReleaseInfo, atomic_update, load_subscriptions
-from github.github_api import fetch_last_n_releases, fetch_latest_release, render_markdown
+from github.github_api import fetch_last_n_releases, fetch_latest_release
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -182,128 +184,73 @@ async def background_checker(bot: Bot) -> None:
         await run_check_cycle(bot)
 
 
-class _TgHtmlConverter(HTMLParser):
-    """Convert GitHub's pre-rendered ``body_html`` to Telegram-supported HTML.
+# Layout tags that Telegram Rich Messages don't support; drop them but keep inner text.
+_WRAPPER_TAG_RE = re.compile(
+    r"</?(?:div|span|section|article|header|footer|main|aside|nav|figure|figcaption|picture|source|video|audio|iframe)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+_ALIGN_ATTR_RE = re.compile(r'\s+align="[^"]*"', re.IGNORECASE)
 
-    Tags outside Telegram's allowed subset are dropped while their inner text is
-    preserved (except ``img`` and other unknown tags, where only text survives).
+# Rich-compatible tags: hide them from to_rich (which escapes any raw HTML) and
+# restore them in the final output.
+_RICH_TAG_RE = re.compile(
+    r"</?(?:h[1-6]|b|strong|i|em|u|s|strike|del|code|pre|blockquote|a|br|ul|ol|li|"
+    r"table|thead|tbody|tr|th|td|img|hr)\b[^>]*>",
+    re.IGNORECASE,
+)
+_MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+
+# <details><summary>T</summary>body</details> -> **T**\n\nbody.
+# Rich Messages' HTML support for <details> isn't documented; a bold summary
+# preserves the visual hierarchy without relying on undocumented behavior.
+_DETAILS_BLOCK_RE = re.compile(
+    r"<details[^>]*>\s*<summary[^>]*>(.*?)</summary>(.*?)</details>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_TAG_MARKER = "\u27e6TAG{}\u27e7"
+
+
+def _preprocess_release_body(body: str) -> tuple[str, list[str]]:
+    """Shrink GitHub-flavoured HTML in a release body to Markdown that to_rich handles.
+
+    ``tg-rich-converter`` escapes any raw HTML to entities, which then appear as
+    literal text in Telegram. To let Rich Messages render headings, images,
+    links, code, etc., those tags are swapped for opaque markers before to_rich
+    runs and restored afterwards by ``_restore_rich_tags``.
+
+    Returns ``(transformed_body, saved_tags)``.
     """
+    body = _DETAILS_BLOCK_RE.sub(
+        lambda m: f"\n\n**{m.group(1).strip()}**\n\n{m.group(2).strip()}\n\n", body
+    )
+    body = _WRAPPER_TAG_RE.sub("", body)
+    body = _ALIGN_ATTR_RE.sub("", body)
+    # Normalize Markdown images to <img> so they go through the same protection.
+    body = _MD_IMAGE_RE.sub(lambda m: f'<img src="{m.group(2)}" alt="{m.group(1)}">', body)
 
-    # Allowed tags mapped to their Telegram equivalent tag name.
-    _ALLOWED_MAP = {
-        "b": "b",
-        "strong": "b",
-        "i": "i",
-        "em": "i",
-        "u": "u",
-        "s": "s",
-        "strike": "s",
-        "del": "s",
-        "blockquote": "blockquote",
-        "pre": "pre",
-        "a": "a",
-        "br": "br",
-        "code": "code",
-        "li": "li",
-    }
+    saved: list[str] = []
 
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._out: list[str] = []
-        self._inside_pre = 0
-        self._a_depth = 0
+    def _save(m: re.Match) -> str:
+        saved.append(m.group(0))
+        return _TAG_MARKER.format(len(saved) - 1)
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            self._out.append("\n<b>")
-            return
-        if tag == "img":
-            src = dict(attrs).get("src", "")
-            alt = dict(attrs).get("alt", "")
-            label = html.escape(f"🖼 {alt}") if alt else "🖼 изображение"
-            if self._a_depth > 0:
-                self._out.append(label)
-            else:
-                self._out.append(f'<a href="{html.escape(src, quote=True)}">{label}</a>')
-            return
-        tg = self._ALLOWED_MAP.get(tag)
-        if tg is None:
-            return  # dropped tag; inner text is preserved by handle_data
-        if tag == "li":
-            self._out.append("\n• ")
-            return
-        if tg == "code" and self._inside_pre > 0:
-            return  # already inside <pre>; don't wrap in <code>
-        if tg == "a":
-            self._a_depth += 1
-            href = dict(attrs).get("href", "")
-            self._out.append(f'<a href="{html.escape(href, quote=True)}">')
-        elif tg == "br":
-            self._out.append("\n")
-        else:
-            self._out.append(f"<{tg}>")
-        if tg == "pre":
-            self._inside_pre += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            self._out.append("</b>\n")
-            return
-        if tag == "img":
-            return
-        tg = self._ALLOWED_MAP.get(tag)
-        if tg is None:
-            return
-        if tag == "li":
-            return
-        if tg == "code" and self._inside_pre > 0:
-            return
-        if tg == "br":
-            return
-        if tg == "a":
-            self._a_depth = max(0, self._a_depth - 1)
-            self._out.append("</a>")
-        else:
-            self._out.append(f"</{tg}>")
-        if tg == "pre":
-            self._inside_pre = max(0, self._inside_pre - 1)
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
-        # Self-closing forms: <br/>, <img/>, <hr/>, etc.
-        if tag == "br":
-            self._out.append("\n")
-            return
-        if tag == "img":
-            src = dict(attrs).get("src", "")
-            alt = dict(attrs).get("alt", "")
-            label = html.escape(f"🖼 {alt}") if alt else "🖼 изображение"
-            if self._a_depth > 0:
-                self._out.append(label)
-            else:
-                self._out.append(f'<a href="{html.escape(src, quote=True)}">{label}</a>')
-            return
-        # Any other self-closing tag is dropped (kept tags like <a/> don't carry content).
-
-    def handle_data(self, data: str) -> None:
-        self._out.append(html.escape(data))
+    body = _RICH_TAG_RE.sub(_save, body)
+    return body, saved
 
 
-def _github_html_to_telegram(html_text: str) -> str:
-    """Convert GitHub release HTML to a Telegram-safe HTML string."""
-    parser = _TgHtmlConverter()
-    parser.feed(html_text)
-    parser.close()
-    result = "".join(parser._out)
-    result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
+def _restore_rich_tags(text: str, saved: list[str]) -> str:
+    for i, tag in enumerate(saved):
+        text = text.replace(_TAG_MARKER.format(i), tag)
+    return text
 
 
-async def _render_release_body(release: ReleaseInfo) -> str:
-    """Render a release body (GFM markdown) to Telegram-safe HTML, with caching.
+async def _render_release_body_rich(release: ReleaseInfo) -> str:
+    """Convert a release Markdown body to Rich HTML via tg-rich-converter, with caching.
 
-    GitHub's release object only carries raw ``body`` (GFM markdown), so we render
-    it via GitHub's ``/markdown`` endpoint, then sanitize to Telegram's HTML subset.
-    Failures fall back to escaping the raw markdown (uncached).
+    Conversion is local (no network call). Falls back to escaped raw text if the
+    converter raises. Returned HTML targets Telegram's Rich Messages subset
+    (tables, lists, math, details), which the bot sends via ``send_rich_message``.
     """
     body = release.get("body") or ""
     if not body:
@@ -312,108 +259,60 @@ async def _render_release_body(release: ReleaseInfo) -> str:
     if rid and rid in RENDER_CACHE:
         return RENDER_CACHE[rid]
     try:
-        html_text = await render_markdown(body)
-    except Exception as e:  # noqa: BLE001 - network/render can fail in many ways; fall back gracefully
-        logger.warning("markdown render failed: %s", e)
+        cleaned, saved = _preprocess_release_body(body)
+        rich_html = _restore_rich_tags(to_rich(cleaned), saved)
+    except Exception as e:  # noqa: BLE001 - converter may raise on malformed markdown
+        logger.warning("Rich conversion failed for release %s: %s", rid, e)
         return html.escape(body)
-    tg = _github_html_to_telegram(html_text)
     if rid:
-        RENDER_CACHE[rid] = tg
-    return tg
-
-
-def _split_html_safe(text: str, limit: int = 4000) -> list[str]:
-    """Split HTML into chunks of at most `limit` chars.
-
-    Cutting happens only at tag boundaries; any tags still open at the end of a
-    chunk are closed and re-opened at the start of the next chunk so markup is
-    never broken across messages. A run of bare text with no tags that still
-    exceeds `limit` is hard-split by characters as a last resort.
-    """
-    tokens = re.split(r"(<[^>]+>)", text)
-    chunks: list[str] = []
-    current = ""
-    open_tags: list[tuple[str, str]] = []  # (full opening tag, tag name)
-
-    def _carry() -> str:
-        return "".join(opening for opening, _ in open_tags)
-
-    def _close() -> str:
-        return "".join(f"</{name}>" for _, name in reversed(open_tags))
-
-    for tok in tokens:
-        if not tok:
-            continue
-        stripped = tok.strip()
-        if stripped.startswith("<"):
-            is_closing = stripped.startswith("</")
-            name_part = stripped[2:-1] if is_closing else stripped[1:-1]
-            parts = name_part.split()
-            name = parts[0].rstrip("/").lower() if parts else ""
-            if is_closing:
-                for idx in range(len(open_tags) - 1, -1, -1):
-                    if open_tags[idx][1] == name:
-                        del open_tags[idx]
-                        break
-                current += tok
-            else:
-                self_closing = stripped.endswith("/>") or name in ("br", "img")
-                if self_closing:
-                    current += tok
-                else:
-                    if len(current) + len(tok) > limit and current:
-                        chunks.append(current + _close())
-                        current = _carry()
-                    open_tags.append((tok, name))
-                    current += tok
-        else:
-            if len(current) + len(tok) > limit and current:
-                chunks.append(current + _close())
-                current = _carry()
-            if len(current) + len(tok) > limit:
-                carried = _carry()
-                room = limit - len(carried)
-                if room <= 0:
-                    if current:
-                        chunks.append(current)
-                    step = max(1, limit)
-                    for i in range(0, len(tok), step):
-                        chunks.append(tok[i : i + step])
-                    open_tags.clear()
-                    current = ""
-                else:
-                    for i in range(0, len(tok), room):
-                        chunks.append(carried + tok[i : i + room] + _close())
-                    current = carried
-            else:
-                current += tok
-
-    if current:
-        chunks.append(current + _close())
-    return chunks
+        RENDER_CACHE[rid] = rich_html
+    return rich_html
 
 
 async def _send_release_notification(
-    bot: Bot, uid: int, repo_name: str, release: ReleaseInfo, header: str = "🚀 Новый релиз"
+    bot: Bot,
+    uid: int,
+    repo_name: str,
+    release: ReleaseInfo,
+    header: str = "🚀 Новый релиз",
+    repo_index: int | None = None,
 ) -> None:
-    """Format and send a release notification, splitting into multiple messages if needed."""
-    rendered = await _render_release_body(release)
-    text = _format_release_notification(repo_name, release, rendered_body=rendered, header=header)
-    for chunk in _split_html_safe(text, limit=4000):
-        await bot.send_message(uid, chunk, parse_mode="HTML", disable_web_page_preview=True)
+    """Send a release notification as a Rich Message.
 
+    When ``repo_index`` is provided (release opened from the repo detail view),
+    a "back to repository" inline button is attached. Background notifications
+    omit the button entirely: the user is already subscribed, and there is no
+    sensible action to offer.
 
-def _format_release_notification(
-    repo_name: str, release: ReleaseInfo, rendered_body: str = "", header: str = "🚀 Новый релиз"
-) -> str:
-    """Format a notification message for a new release (Russian)."""
+    If the release body exceeds Telegram's 32 768-char limit (rare), the API will
+    reject the message; the caller logs the failure. Consider split_rich_message()
+    if this ever happens in practice.
+    """
+    rich_body = await _render_release_body_rich(release)
+    name_suffix = ""
+    if release.get("name") and release["name"] != release["tag_name"]:
+        name_suffix = f" — {html.escape(release['name'])}"
     parts = [
-        f"{header} <b>{repo_name}</b>",
-        f"<a href='{release['html_url']}'>{release['tag_name']}</a>"
-        + (f" — {release['name']}" if release.get("name") and release["name"] != release["tag_name"] else ""),
+        f"<b>{header} {html.escape(repo_name)}</b>",
+        f'<a href="{html.escape(release["html_url"], quote=True)}">{html.escape(release["tag_name"])}</a>'
+        + name_suffix,
     ]
-    if rendered_body:
-        parts.append(rendered_body)
+    if rich_body:
+        parts.append(rich_body)
     elif release.get("body"):
         parts.append(html.escape(release["body"]))
-    return "\n\n".join(parts)
+    full_html = "\n\n".join(parts)
+
+    keyboard: InlineKeyboardMarkup | None = None
+    if repo_index is not None:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ К репозиторию", callback_data=f"repo:view:{repo_index}")]
+            ]
+        )
+
+    await bot.send_rich_message(
+        chat_id=uid,
+        rich_message=InputRichMessage(html=full_html),
+        reply_markup=keyboard,
+    )

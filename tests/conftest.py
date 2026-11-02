@@ -17,10 +17,15 @@ class FakeBot:
     """Minimal stand-in for an aiogram Bot used to capture outgoing messages."""
 
     def __init__(self) -> None:
-        self.sent: list = []
+        self.sent: list = []  # (chat_id, text, kwargs) for plain send_message
+        self.rich_sent: list = []  # (chat_id, InputRichMessage, kwargs) for send_rich_message
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text, kwargs))
+        return None
+
+    async def send_rich_message(self, chat_id, rich_message, **kwargs):
+        self.rich_sent.append((chat_id, rich_message, kwargs))
         return None
 
     async def send_chat_action(self, *args, **kwargs):
