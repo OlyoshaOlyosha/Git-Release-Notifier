@@ -22,7 +22,7 @@ from aiogram.types import (
 )
 
 from core.config import REPOS_PER_PAGE
-from core.models import RepoEntry, atomic_update, load_subscriptions
+from core.models import RepoEntry, atomic_update, get_user_settings, load_subscriptions
 from github.checker import _send_release_notification, notify_admin
 from github.github_api import (
     fetch_last_n_releases,
@@ -173,6 +173,7 @@ async def cmd_help(message: Message) -> None:
         "🤖 <b>GitHub Release Tracker</b> — бот для отслеживания релизов.\n\n"
         "📋 <b>Мои репозитории</b> — просмотр отслеживаемых репозиториев.\n"
         "➕ <b>Добавить репозиторий</b> — начать отслеживание по ссылке.\n"
+        "⚙️ <b>Настройки</b> — перевод релизов (автоперевод и язык).\n"
         "/add &lt;ссылка&gt; — быстро добавить репозиторий по ссылке без диалога.\n"
         "/check — ручная проверка обновлений.\n"
         "/export — выгрузить список ваших репозиториев (ссылками).\n"
@@ -433,7 +434,13 @@ async def handle_release_body(callback: CallbackQuery) -> None:
         await callback.message.edit_text("❌ Не удалось загрузить релиз.")
         return
     await _send_release_notification(
-        callback.message.bot, uid, repo["name"], release, header="📄 Релиз", repo_index=index
+        callback.message.bot,
+        uid,
+        repo["name"],
+        release,
+        header="📄 Релиз",
+        repo_index=index,
+        settings=get_user_settings(load_subscriptions(), uid),
     )
     await callback.answer()
 

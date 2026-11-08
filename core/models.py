@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Callable, TypedDict
 
-from core.config import SUBSCRIPTIONS_FILE
+from core.config import SUBSCRIPTIONS_FILE, TARGET_LANG
 
 # Serializes all read-modify-write mutations of subscriptions.json so that
 # interleaved writes (background checker vs. user commands) cannot clobber
@@ -56,6 +56,31 @@ class Subscriptions(TypedDict):
     """Root structure of the subscriptions file."""
 
     users: dict[int, list[RepoEntry]]  # key: Telegram user_id
+    settings: dict[int, UserSettings]  # optional; per-user bot settings
+
+
+class UserSettings(TypedDict):
+    """Per-user bot settings stored under ``settings[user_id]``."""
+
+    auto_translate: bool  # translate release notifications automatically; default False
+    translate_lang: str  # target language code; default comes from TARGET_LANG env
+
+
+DEFAULT_USER_SETTINGS: UserSettings = {
+    "auto_translate": False,
+    "translate_lang": TARGET_LANG or "ru",
+}
+
+
+def get_user_settings(subs: Subscriptions, uid: int) -> UserSettings:
+    """Return the user's settings merged over defaults (no writes)."""
+    stored = subs.get("settings", {}).get(uid, {})
+    return {**DEFAULT_USER_SETTINGS, **stored}
+
+
+def set_user_settings(subs: Subscriptions, uid: int, **kwargs) -> None:
+    """Persist a partial settings update (mutates ``subs`` in place)."""
+    subs.setdefault("settings", {}).setdefault(uid, {}).update(kwargs)
 
 
 class ReleaseInfo(TypedDict):
@@ -86,6 +111,9 @@ def load_subscriptions() -> Subscriptions:
                 return {"users": {}}
             # Convert string keys to int to avoid mismatch with Telegram user IDs
             data["users"] = {int(uid): repos for uid, repos in data["users"].items()}
+            settings = data.get("settings")
+            if isinstance(settings, dict):
+                data["settings"] = {int(uid): s for uid, s in settings.items()}
             return data
     except (json.JSONDecodeError, OSError, ValueError):
         return {"users": {}}

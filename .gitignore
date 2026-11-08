@@ -223,3 +223,7 @@ AGENTS.md
 
 # Other
 subscriptions.json
+# Local-only project docs
+AGENTS.md
+tech_instructions.md
+user_commands.md

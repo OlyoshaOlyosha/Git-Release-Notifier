@@ -19,6 +19,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from core import config
 from github.checker import background_checker, run_check_cycle
 from ui.handlers import router
+from ui.settings import router as settings_router
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ async def main() -> None:
 
     dp = Dispatcher()
     dp.include_router(router)
+    dp.include_router(settings_router)
 
     # Launch the background checker and polling as named tasks so their
     # lifecycle is observable: a polling crash must abort the process instead

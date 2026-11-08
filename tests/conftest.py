@@ -49,11 +49,17 @@ def tmp_subs(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clear_render_cache():
-    """Reset the render cache between tests to avoid cross-test hits."""
+def _clear_caches():
+    """Reset checker caches between tests to avoid cross-test hits."""
     github.checker.RENDER_CACHE.clear()
+    github.checker.TRANSLATED_CACHE.clear()
+    github.checker.NAME_CACHE.clear()
+    github.checker.RELEASE_CACHE.clear()
     yield
     github.checker.RENDER_CACHE.clear()
+    github.checker.TRANSLATED_CACHE.clear()
+    github.checker.NAME_CACHE.clear()
+    github.checker.RELEASE_CACHE.clear()
 
 
 def make_release(

@@ -6,15 +6,25 @@ import asyncio
 import html
 import logging
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
+from aiogram.types import InputRichMessage
 from tg_rich_converter import to_rich
 
 from core.config import ADMIN_USER_ID, API_DELAY_SEC, CHECK_INTERVAL_SEC
-from core.models import CachedReleaseInfo, ReleaseInfo, atomic_update, load_subscriptions
+from core.models import (
+    CachedReleaseInfo,
+    ReleaseInfo,
+    UserSettings,
+    atomic_update,
+    get_user_settings,
+    load_subscriptions,
+)
 from github.github_api import fetch_last_n_releases, fetch_latest_release
+from github.translate import translate_text
+from ui.keyboards import release_translate_keyboard
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -23,6 +33,21 @@ logger = logging.getLogger(__name__)
 
 # Cache rendered release bodies by release id to avoid re-rendering on every cycle.
 RENDER_CACHE: dict[int, str] = {}
+# Translated bodies per (release id, language); original lives in RENDER_CACHE.
+TRANSLATED_CACHE: OrderedDict[tuple[int, str], str] = OrderedDict()
+# Translated release names per (release id, language).
+NAME_CACHE: dict[tuple[int, str], str] = {}
+# Recent notifications per release id, enabling the translate/original toggle
+# to re-render the message without re-fetching GitHub. Bounded, oldest evicted.
+RELEASE_CACHE: OrderedDict[int, dict] = OrderedDict()
+_CACHE_LIMIT = 200
+
+
+def _cache_put(cache: OrderedDict, key, value) -> None:
+    """Insert into a bounded cache, evicting the oldest entry on overflow."""
+    if len(cache) >= _CACHE_LIMIT:
+        cache.popitem(last=False)
+    cache[key] = value
 
 
 async def notify_admin(bot: Bot, text: str) -> None:
@@ -158,7 +183,8 @@ async def run_check_cycle(bot: Bot) -> None:
         # Send notifications outside the lock so I/O never blocks the lock.
         for uid, name, best in to_notify:
             try:
-                await _send_release_notification(bot, uid, name, best)
+                settings = get_user_settings(subs, uid)
+                await _send_release_notification(bot, uid, name, best, settings=settings)
                 logger.info("Notification sent to user %d for %s", uid, name)
             except Exception as e:
                 logger.warning("Could not notify user %d: %s", uid, e)
@@ -198,7 +224,7 @@ _RICH_TAG_RE = re.compile(
     r"table|thead|tbody|tr|th|td|img|hr)\b[^>]*>",
     re.IGNORECASE,
 )
-_MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 # <details><summary>T</summary>body</details> -> **T**\n\nbody.
 # Rich Messages' HTML support for <details> isn't documented; a bold summary
@@ -221,9 +247,7 @@ def _preprocess_release_body(body: str) -> tuple[str, list[str]]:
 
     Returns ``(transformed_body, saved_tags)``.
     """
-    body = _DETAILS_BLOCK_RE.sub(
-        lambda m: f"\n\n**{m.group(1).strip()}**\n\n{m.group(2).strip()}\n\n", body
-    )
+    body = _DETAILS_BLOCK_RE.sub(lambda m: f"\n\n**{m.group(1).strip()}**\n\n{m.group(2).strip()}\n\n", body)
     body = _WRAPPER_TAG_RE.sub("", body)
     body = _ALIGN_ATTR_RE.sub("", body)
     # Normalize Markdown images to <img> so they go through the same protection.
@@ -245,53 +269,61 @@ def _restore_rich_tags(text: str, saved: list[str]) -> str:
     return text
 
 
-async def _render_release_body_rich(release: ReleaseInfo) -> str:
+async def _render_release_body_rich(release: ReleaseInfo, lang: str | None = None) -> str:
     """Convert a release Markdown body to Rich HTML via tg-rich-converter, with caching.
 
-    Conversion is local (no network call). Falls back to escaped raw text if the
-    converter raises. Returned HTML targets Telegram's Rich Messages subset
-    (tables, lists, math, details), which the bot sends via ``send_rich_message``.
+    Conversion is local, except that a non-empty ``lang`` first translates the
+    preprocessed Markdown (with Rich tags hidden as opaque markers, so Google
+    cannot translate the tags themselves). Originals are cached in RENDER_CACHE,
+    translations in TRANSLATED_CACHE per (release id, lang). Falls back to
+    escaped raw text if the converter raises.
     """
     body = release.get("body") or ""
     if not body:
         return ""
     rid = release.get("id")
-    if rid and rid in RENDER_CACHE:
-        return RENDER_CACHE[rid]
+    if lang is None:
+        if rid and rid in RENDER_CACHE:
+            return RENDER_CACHE[rid]
+    elif (rid, lang) in TRANSLATED_CACHE:
+        return TRANSLATED_CACHE[(rid, lang)]
     try:
         cleaned, saved = _preprocess_release_body(body)
+        if lang:
+            cleaned = await translate_text(cleaned, lang)
+            missing = [i for i in range(len(saved)) if _TAG_MARKER.format(i) not in cleaned]
+            if missing:
+                logger.warning("Translation lost %d tag markers for release %s: %s", len(missing), rid, missing)
         rich_html = _restore_rich_tags(to_rich(cleaned), saved)
     except Exception as e:  # noqa: BLE001 - converter may raise on malformed markdown
         logger.warning("Rich conversion failed for release %s: %s", rid, e)
         return html.escape(body)
     if rid:
-        RENDER_CACHE[rid] = rich_html
+        if lang is None:
+            RENDER_CACHE[rid] = rich_html
+        else:
+            _cache_put(TRANSLATED_CACHE, (rid, lang), rich_html)
     return rich_html
 
 
-async def _send_release_notification(
-    bot: Bot,
-    uid: int,
-    repo_name: str,
-    release: ReleaseInfo,
-    header: str = "🚀 Новый релиз",
-    repo_index: int | None = None,
-) -> None:
-    """Send a release notification as a Rich Message.
+async def _release_display_name(release: ReleaseInfo, lang: str | None = None) -> str:
+    """Return the release name, translated to ``lang`` if requested (cached)."""
+    name = release.get("name")
+    if not lang or not name:
+        return name or ""
+    key = (release.get("id"), lang)
+    if key not in NAME_CACHE:
+        NAME_CACHE[key] = await translate_text(name, lang)
+    return NAME_CACHE[key]
 
-    When ``repo_index`` is provided (release opened from the repo detail view),
-    a "back to repository" inline button is attached. Background notifications
-    omit the button entirely: the user is already subscribed, and there is no
-    sensible action to offer.
 
-    If the release body exceeds Telegram's 32 768-char limit (rare), the API will
-    reject the message; the caller logs the failure. Consider split_rich_message()
-    if this ever happens in practice.
-    """
-    rich_body = await _render_release_body_rich(release)
+async def build_release_html(release: ReleaseInfo, repo_name: str, header: str, lang: str | None = None) -> str:
+    """Compose the full Rich HTML for a release message (original or translated)."""
+    rich_body = await _render_release_body_rich(release, lang)
+    release_name = await _release_display_name(release, lang)
     name_suffix = ""
-    if release.get("name") and release["name"] != release["tag_name"]:
-        name_suffix = f" — {html.escape(release['name'])}"
+    if release_name and release_name != release["tag_name"]:
+        name_suffix = f" — {html.escape(release_name)}"
     parts = [
         f"<b>{header} {html.escape(repo_name)}</b>",
         f'<a href="{html.escape(release["html_url"], quote=True)}">{html.escape(release["tag_name"])}</a>'
@@ -301,18 +333,44 @@ async def _send_release_notification(
         parts.append(rich_body)
     elif release.get("body"):
         parts.append(html.escape(release["body"]))
-    full_html = "\n\n".join(parts)
+    return "\n\n".join(parts)
 
-    keyboard: InlineKeyboardMarkup | None = None
-    if repo_index is not None:
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ К репозиторию", callback_data=f"repo:view:{repo_index}")]
-            ]
+
+async def _send_release_notification(
+    bot: Bot,
+    uid: int,
+    repo_name: str,
+    release: ReleaseInfo,
+    header: str = "🚀 Новый релиз",
+    repo_index: int | None = None,
+    settings: UserSettings | None = None,
+) -> None:
+    """Send a release notification as a Rich Message with a translate toggle button.
+
+    When ``repo_index`` is provided (release opened from the repo detail view),
+    a "back to repository" button is added below the translate button.
+
+    If ``settings`` enables ``auto_translate``, the message is rendered in the
+    user's language and the button offers the original; otherwise it arrives
+    untranslated with a translate button. The release is remembered in
+    RELEASE_CACHE so the toggle never re-fetches GitHub. If the body exceeds
+    Telegram's 32 768-char limit (rare), the API rejects the message; the
+    caller logs the failure.
+    """
+    settings = settings or {}
+    lang = settings.get("translate_lang") if settings.get("auto_translate") else None
+    full_html = await build_release_html(release, repo_name, header, lang)
+
+    rid = release.get("id")
+    if rid:
+        _cache_put(
+            RELEASE_CACHE,
+            rid,
+            {"release": release, "repo_name": repo_name, "header": header, "repo_index": repo_index},
         )
 
     await bot.send_rich_message(
         chat_id=uid,
         rich_message=InputRichMessage(html=full_html),
-        reply_markup=keyboard,
+        reply_markup=release_translate_keyboard(rid, translated=lang is not None, repo_index=repo_index),
     )

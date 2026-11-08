@@ -157,7 +157,7 @@ async def test_toggle_prerelease_invalid_index(tmp_subs, fake_bot):
 async def test_handle_release_body(tmp_subs, fake_bot, monkeypatch):
     captured = {}
 
-    async def _send(bot, uid, name, release, header="📄 Релиз", repo_index=None):
+    async def _send(bot, uid, name, release, header="📄 Релиз", repo_index=None, settings=None):
         captured["args"] = (bot, uid, name, release, header)
         captured["repo_index"] = repo_index
 

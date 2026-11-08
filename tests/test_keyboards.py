@@ -32,7 +32,7 @@ def _button_texts(markup) -> list[str]:
 def test_main_menu_keyboard():
     kb = main_menu_keyboard()
     texts = [btn.text for row in kb.keyboard for btn in row]
-    assert texts == ["📋 Мои репозитории", "➕ Добавить репозиторий"]
+    assert texts == ["📋 Мои репозитории", "➕ Добавить репозиторий", "⚙️ Настройки"]
 
 
 def test_repo_list_keyboard_buttons_and_callbacks():

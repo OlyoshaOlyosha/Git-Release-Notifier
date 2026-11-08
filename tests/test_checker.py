@@ -68,12 +68,7 @@ async def test_render_release_body_rich_preprocesses_html(monkeypatch):
         return body
 
     monkeypatch.setattr(checker, "to_rich", _fake_to_rich)
-    raw_body = (
-        '<div align="center">'
-        '<img src="logo.png" alt="Logo">'
-        '<h1 align="center">Title</h1>'
-        "</div>"
-    )
+    raw_body = '<div align="center"><img src="logo.png" alt="Logo"><h1 align="center">Title</h1></div>'
     rel = make_release(rid=11, body=raw_body)
     result = await _render_release_body_rich(rel)
 
@@ -124,12 +119,14 @@ async def test_send_release_notification_uses_rich_message(monkeypatch, fake_bot
     assert "owner/repo" in rich_msg.html
     assert "<b>rendered</b>" in rich_msg.html
     assert "🚀" in rich_msg.html
-    # Background notification: no button, the user is already subscribed.
-    assert kwargs["reply_markup"] is None
+    # Background notification still carries the translate toggle button.
+    markup = kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][0].text == "🌐 Перевести"
+    assert markup.inline_keyboard[0][0].callback_data == "reltr:3:0"
 
 
 async def test_send_release_notification_with_back_button(monkeypatch, fake_bot):
-    """Inline release view supplies repo_index -> 'back to repository' button."""
+    """Inline release view supplies repo_index -> 'back to repository' button below the toggle."""
     RENDER_CACHE.clear()
     monkeypatch.setattr(checker, "to_rich", lambda _b: "")
     rel = make_release(rid=3, tag="v1.0", body="")
@@ -138,8 +135,9 @@ async def test_send_release_notification_with_back_button(monkeypatch, fake_bot)
     _, _, kwargs = fake_bot.rich_sent[0]
     markup = kwargs["reply_markup"]
     assert markup is not None
-    assert markup.inline_keyboard[0][0].text == "⬅️ К репозиторию"
-    assert markup.inline_keyboard[0][0].callback_data == "repo:view:7"
+    assert markup.inline_keyboard[0][0].text == "🌐 Перевести"
+    assert markup.inline_keyboard[1][0].text == "⬅️ К репозиторию"
+    assert markup.inline_keyboard[1][0].callback_data == "repo:view:7"
 
 
 async def test_send_release_notification_empty_body(monkeypatch, fake_bot):

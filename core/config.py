@@ -12,6 +12,11 @@ SUBSCRIPTIONS_FILE: str = "subscriptions.json"
 CHECK_INTERVAL_SEC: int = 3600  # 1 hour between full check cycles
 API_DELAY_SEC: float = 3.0  # Delay between GitHub API requests to respect rate limits
 
+# Default release-translation language (free Google endpoint). Used for users
+# who have not chosen a language in settings; auto-translate itself defaults to
+# off per user and is toggled in the bot's settings menu.
+TARGET_LANG: str = os.getenv("TARGET_LANG", "ru")
+
 # Pagination
 REPOS_PER_PAGE: int = 10  # Number of repos per page in the list
 

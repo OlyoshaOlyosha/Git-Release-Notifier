@@ -12,11 +12,82 @@ from core.models import RepoEntry
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Return the persistent main menu with '📋 Мои репозитории' and '➕ Добавить репозиторий'."""
+    """Return the persistent main menu with repo actions and settings."""
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text="📋 Мои репозитории"))
     builder.row(KeyboardButton(text="➕ Добавить репозиторий"))
+    builder.row(KeyboardButton(text="⚙️ Настройки"))
     return builder.as_markup(resize_keyboard=True)
+
+
+def release_translate_keyboard(rid: int, translated: bool, repo_index: int | None = None) -> InlineKeyboardMarkup:
+    """Inline keyboard under a release message: translate/original toggle.
+
+    ``translated`` reflects the currently displayed state; pressing the button
+    switches to the opposite one. Callback format: ``reltr:<rid>:<0|1>`` where
+    the last field is the current state.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🌐 Показать оригинал" if translated else "🌐 Перевести",
+            callback_data=f"reltr:{rid}:{1 if translated else 0}",
+        )
+    )
+    if repo_index is not None:
+        builder.row(InlineKeyboardButton(text="⬅️ К репозиторию", callback_data=f"repo:view:{repo_index}"))
+    return builder.as_markup()
+
+
+# Language presets offered in the settings menu (code, label).
+LANGUAGE_PRESETS: list[tuple[str, str]] = [
+    ("ru", "Русский"),
+    ("en", "English"),
+    ("de", "Deutsch"),
+    ("es", "Español"),
+    ("fr", "Français"),
+]
+
+
+def settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
+    """Inline keyboard for the settings menu: auto-translate toggle + language."""
+    builder = InlineKeyboardBuilder()
+    auto = settings.get("auto_translate", False)
+    lang = settings.get("translate_lang", "ru")
+    builder.row(
+        InlineKeyboardButton(
+            text=f"🌐 Автоперевод: {'ВКЛ' if auto else 'ВЫКЛ'}",
+            callback_data="settings:autotrans",
+        )
+    )
+    for i in range(0, len(LANGUAGE_PRESETS), 3):
+        row = []
+        for code, label in LANGUAGE_PRESETS[i : i + 3]:
+            mark = "✓ " if code == lang else ""
+            row.append(InlineKeyboardButton(text=f"{mark}{code}", callback_data=f"settings:lang:{code}"))
+        builder.row(*row)
+    builder.row(
+        InlineKeyboardButton(text="Другой язык…", callback_data="settings:langcustom"),
+        InlineKeyboardButton(text="⬅️ Меню", callback_data="settings:close"),
+    )
+    return builder.as_markup()
+
+
+def settings_text(settings: dict) -> str:
+    """Human-readable settings summary for the settings menu."""
+    auto = settings.get("auto_translate", False)
+    lang = settings.get("translate_lang", "ru")
+    mode = (
+        "включён — релизы приходят сразу переведёнными"
+        if auto
+        else ("выключен — под каждым релизом есть кнопка «🌐 Перевести»")
+    )
+    return (
+        "<b>⚙️ Настройки</b>\n\n"
+        f"<b>Перевод релизов</b>\n"
+        f"Автоперевод: {'включён' if auto else 'выключен'} ({mode})\n"
+        f"Язык перевода: <b>{lang}</b>"
+    )
 
 
 def repo_list_keyboard(
